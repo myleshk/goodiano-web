@@ -116,95 +116,133 @@ class PianoAudioEngine {
             offset += subSize;
           }
         } else if (listType === 'pdta') {
-          // Parse pdta sub-chunks
+          // Parse pdta: collect all sub-chunks into raw arrays first,
+          // then build zones by walking instrument → bag → generator chains.
+          const pdtaStart = offset - 4; // rewind past 'pdta' FOURCC for raw access
+          const pdtaRaw = { shdr: null, inst: null, ibag: null, igen: null };
+
           while (offset < listEnd) {
             const subID = readFourCC();
             const subSize = readU32();
-            const subEnd = offset + subSize;
+            pdtaRaw[subID] = { base: offset, size: subSize };
+            offset += subSize;
+          }
 
-            if (subID === 'shdr') {
-              // Sample headers: 46 bytes each (last is terminal EOS record)
-              const count = Math.floor(subSize / 46) - 1;
-              for (let i = 0; i < count; i++) {
-                const base = offset;
-                const nameBytes = new Uint8Array(data.buffer, data.byteOffset + base, 20);
-                const name = textDecoder.decode(nameBytes).replace(/\0/g, '');
-                sampleHeaders.push({
-                  name,
-                  start: data.getUint32(base + 20, true),
-                  end: data.getUint32(base + 24, true),
-                  startLoop: data.getUint32(base + 28, true),
-                  endLoop: data.getUint32(base + 32, true),
-                  sampleRate: data.getUint32(base + 36, true),
-                  originalPitch: data.getUint8(base + 40),
-                  pitchCorrection: data.getInt8(base + 41),
-                });
-                offset += 46;
-              }
-              offset += 46; // skip terminal record
-            } else if (subID === 'inst') {
-              // Instrument headers: we need to find the first instrument's bag index
-              // Format: achInstName(20) + wInstBagNdx(2) = 22 bytes
-              const count = Math.floor(subSize / 22);
-              const base = offset;
-              const nameBytes = new Uint8Array(data.buffer, data.byteOffset + base, 20);
-              const bagIdx = data.getUint16(base + 20, true);
-              // Just read first instrument
-              if (count > 0) {
-                this._firstInstBagIdx = bagIdx;
-              }
-              offset = subEnd;
-            } else if (subID === 'ibag') {
-              // Instrument bags: 4 bytes each
-              const base = offset;
-              const count = Math.floor(subSize / 4);
-              // Parse generator indices for the first instrument's bags
-              const instBagStart = this._firstInstBagIdx || 0;
-              for (let i = instBagStart; i < count; i++) {
-                const genIdx = data.getUint16(base + i * 4, true);
-                // modIdx = data.getUint16(base + i * 4 + 2, true);
-                instrumentZones.push({ genIdx, keyRange: null, sampleID: null, rootKey: null });
-                // Stop when next bag has a different zone (terminator bag has genIdx pointing to end)
-                if (i > instBagStart && genIdx === 0) break;
-              }
-              offset = subEnd;
-            } else if (subID === 'igen') {
-              // Instrument generators: 4 bytes each (sfGenOper:2 + genAmount:2)
-              const base = offset;
-              // Fill in generator values for each zone
-              for (const zone of instrumentZones) {
-                let idx = zone.genIdx;
-                while (true) {
-                  const genOper = data.getUint16(base + idx * 4, true);
-                  const amount = data.getUint16(base + idx * 4 + 2, true);
-                  idx++;
+          // --- Parse shdr (sample headers): 46 bytes each, last is terminal EOS ---
+          if (pdtaRaw.shdr) {
+            const { base, size } = pdtaRaw.shdr;
+            const count = Math.floor(size / 46) - 1;
+            for (let i = 0; i < count; i++) {
+              const b = base + i * 46;
+              const nameBytes = new Uint8Array(data.buffer, data.byteOffset + b, 20);
+              sampleHeaders.push({
+                name: textDecoder.decode(nameBytes).replace(/\0/g, ''),
+                start: data.getUint32(b + 20, true),
+                end: data.getUint32(b + 24, true),
+                startLoop: data.getUint32(b + 28, true),
+                endLoop: data.getUint32(b + 32, true),
+                sampleRate: data.getUint32(b + 36, true),
+                originalPitch: data.getUint8(b + 40),
+                pitchCorrection: data.getInt8(b + 41),
+              });
+            }
+          }
 
-                  // 43 = keyRange: loKey | (hiKey << 8)
-                  if (genOper === 43) {
-                    zone.keyRange = {
-                      lo: amount & 0xFF,
-                      hi: (amount >> 8) & 0xFF,
-                    };
-                  }
-                  // 53 = sampleID
-                  else if (genOper === 53) {
-                    zone.sampleID = amount;
-                  }
-                  // 58 = overridingRootKey
-                  else if (genOper === 58) {
-                    zone.rootKey = amount;
-                  }
+          // --- Parse inst (instrument headers): 22 bytes each ---
+          const instBags = []; // [{ name, bagIdx }]
+          if (pdtaRaw.inst) {
+            const { base, size } = pdtaRaw.inst;
+            const count = Math.floor(size / 22);
+            for (let i = 0; i < count; i++) {
+              const b = base + i * 22;
+              const nameBytes = new Uint8Array(data.buffer, data.byteOffset + b, 20);
+              instBags.push({
+                name: textDecoder.decode(nameBytes).replace(/\0/g, ''),
+                bagIdx: data.getUint16(b + 20, true),
+              });
+            }
+          }
 
-                  // Generator terminator: genOper = 0 (but for instrument zones, this is often
-                  // indicated by the next zone's genIdx or an explicit 0 genOper)
-                  if (genOper === 0) break;
-                  // Safety: don't run forever
-                  if ((idx - zone.genIdx) > 20) break;
+          // --- Parse ibag (instrument bags): 4 bytes each ---
+          const bagEntries = []; // [{ genIdx, modIdx }]
+          if (pdtaRaw.ibag) {
+            const { base, size } = pdtaRaw.ibag;
+            const count = Math.floor(size / 4);
+            for (let i = 0; i < count; i++) {
+              const b = base + i * 4;
+              bagEntries.push({
+                genIdx: data.getUint16(b, true),
+                modIdx: data.getUint16(b + 2, true),
+              });
+            }
+          }
+
+          // --- Parse igen (instrument generators): 4 bytes each ---
+          const genEntries = []; // [{ oper, amount }]
+          if (pdtaRaw.igen) {
+            const { base, size } = pdtaRaw.igen;
+            const count = Math.floor(size / 4);
+            for (let i = 0; i < count; i++) {
+              const b = base + i * 4;
+              genEntries.push({
+                oper: data.getUint16(b, true),
+                amount: data.getUint16(b + 2, true),
+              });
+            }
+          }
+
+          // --- Build zones: for each instrument, iterate its bags & generators ---
+          for (let iIdx = 0; iIdx < instBags.length; iIdx++) {
+            const inst = instBags[iIdx];
+            const nextBagIdx = (iIdx + 1 < instBags.length) ? instBags[iIdx + 1].bagIdx : bagEntries.length;
+            if (inst.bagIdx >= nextBagIdx) continue; // skip empty/terminal instruments
+
+            let globalGen = {}; // accumulated global generators
+
+            for (let bIdx = inst.bagIdx; bIdx < nextBagIdx; bIdx++) {
+              const bag = bagEntries[bIdx];
+              if (!bag || bag.genIdx >= genEntries.length) continue;
+
+              const zone = { keyRange: null, sampleID: null, rootKey: null };
+              const genEnd = (bIdx + 1 < nextBagIdx) ? bagEntries[bIdx + 1].genIdx : genEntries.length;
+              let isGlobal = true;
+
+              for (let gIdx = bag.genIdx; gIdx < genEnd; gIdx++) {
+                const gen = genEntries[gIdx];
+                if (gen.oper === 0) break;
+                if (gen.oper === 43) {
+                  zone.keyRange = { lo: gen.amount & 0xFF, hi: (gen.amount >> 8) & 0xFF };
+                  isGlobal = false;
+                } else if (gen.oper === 53) {
+                  zone.sampleID = gen.amount;
+                  isGlobal = false;
+                } else if (gen.oper === 58) {
+                  zone.rootKey = gen.amount;
+                  isGlobal = false;
+                } else {
+                  // Global-ish generator (e.g., volume, pan, reverb)
+                  globalGen[gen.oper] = gen.amount;
                 }
+                if (gIdx - bag.genIdx > 30) break;
               }
-              offset = subEnd;
-            } else {
-              offset = subEnd;
+
+              if (isGlobal) continue; // global zone, skip
+
+              // Merge global generators into zone fallbacks
+              if (!zone.keyRange && globalGen[43]) {
+                const a = globalGen[43];
+                zone.keyRange = { lo: a & 0xFF, hi: (a >> 8) & 0xFF };
+              }
+              if (zone.sampleID == null && globalGen[53] != null) {
+                zone.sampleID = globalGen[53];
+              }
+              if (!zone.rootKey && globalGen[58]) {
+                zone.rootKey = globalGen[58];
+              }
+
+              if (zone.keyRange && zone.sampleID != null) {
+                instrumentZones.push(zone);
+              }
             }
           }
         } else {
