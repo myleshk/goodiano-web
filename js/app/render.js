@@ -83,7 +83,7 @@ class KeyboardRenderer {
     el.className = 'key-white';
     el.dataset.key = key.id;
     el.dataset.midi = key.midiNote;
-    el.style.flex = '1 0 auto';
+    el.style.flex = '0 0 auto';
     el.style.position = 'relative';
     el.style.cursor = 'pointer';
     el.style.borderRadius = '0 0 6px 6px';

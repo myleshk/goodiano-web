@@ -187,10 +187,17 @@ document.addEventListener('DOMContentLoaded', () => {
   document.addEventListener('click', warmup, { once: true });
 });
 
-// Start app when user first interacts
+// Start app when user first interacts (after DOM is ready)
+let appStarted = false;
 const startApp = async () => {
+  if (appStarted) return;
+  appStarted = true;
   document.removeEventListener('touchstart', startApp);
   document.removeEventListener('click', startApp);
+  // Ensure DOM elements exist (module scripts are deferred, so by first touch DOM is ready)
+  if (!document.querySelector('.keyboard-area')) {
+    await new Promise(r => setTimeout(r, 50));
+  }
   await app.init();
 };
 
