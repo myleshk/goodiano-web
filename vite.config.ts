@@ -31,6 +31,9 @@ export default defineConfig({
   base: './',
   publicDir: 'public',
   plugins: [serviceWorkerPlugin()],
+  server: {
+    allowedHosts: ['goodiano-dev.myles.hk'],
+  },
   build: {
     target: 'safari15',
     sourcemap: true,

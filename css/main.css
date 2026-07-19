@@ -91,6 +91,69 @@ html, body {
   z-index: 10;
 }
 
+/* --- Touch velocity diagnostics --- */
+.velocity-debug {
+  position: fixed;
+  top: calc(env(safe-area-inset-top, 0px) + 8px);
+  right: 8px;
+  width: 210px;
+  padding: 9px 10px;
+  border: 1px solid rgba(255,255,255,0.22);
+  border-radius: 8px;
+  color: rgba(255,255,255,0.9);
+  background: rgba(12,12,12,0.82);
+  box-shadow: 0 3px 14px rgba(0,0,0,0.3);
+  font: 11px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace;
+  z-index: 50;
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+}
+
+.velocity-debug-value {
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.velocity-debug-track {
+  height: 5px;
+  margin: 6px 0;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.14);
+}
+
+.velocity-debug-fill {
+  width: 0;
+  height: 100%;
+  background: linear-gradient(90deg, #4aa3ff, #ffd34a, #ff554a);
+  transition: width 80ms linear;
+}
+
+.velocity-debug-source,
+.velocity-debug-raw,
+.motion-permission-status {
+  color: rgba(255,255,255,0.62);
+}
+
+.motion-permission-status {
+  margin-top: 5px;
+}
+
+.motion-permission-button {
+  width: 100%;
+  margin-top: 6px;
+  padding: 5px 8px;
+  border: 1px solid rgba(255,255,255,0.25);
+  border-radius: 5px;
+  color: #fff;
+  background: rgba(255,255,255,0.12);
+  font: inherit;
+}
+
+.motion-permission-button:disabled {
+  opacity: 0.5;
+}
+
 /* --- Keyboard Area --- */
 .keyboard-area {
   flex: 1;

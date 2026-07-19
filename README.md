@@ -7,7 +7,7 @@ A virtual piano keyboard Progressive Web App (PWA) with realistic **Yamaha U1** 
 - **88-key piano** — Full A0 (MIDI 21) through C8 (MIDI 108) range.
 - **Realistic sound** — Polyphonic playback from a Yamaha U1 SoundFont (`.sf2`) parsed and rendered with the Web Audio API.
 - **Mobile-first** — Optimized for iPhone/iOS: notch & status-bar safe areas, `standalone` PWA mode, touch gestures.
-- **Responsive layout** — Adapts between portrait (≥10 visible white keys) and landscape (fixed 50px keys).
+- **Responsive layout** — Adapts between portrait (≥10 visible white keys) and landscape (55px logical keys).
 - **Mini-map navigator** — Quickly jump across the keyboard.
 - **Offline support** — A service worker caches the app shell and lazily caches the SoundFont for offline play.
 - **Keyboard & pointer input** — Touch, mouse, and computer-keyboard input with velocity support.

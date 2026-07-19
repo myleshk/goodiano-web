@@ -4,7 +4,17 @@
  */
 import type { PianoKey } from './model';
 
-interface InputKey extends Partial<PianoKey> { id: string; velocity?: number }
+type VelocitySource = 'pressure' | 'motion' | 'default';
+type MotionPermissionState = 'unknown' | 'requesting' | 'granted' | 'denied' | 'unavailable';
+// Calibrate the accelerometer impulse to the observed motion-delta range.
+const MOTION_FULL_SCALE = 1.4;
+interface InputKey extends Partial<PianoKey> {
+  id: string;
+  velocity?: number;
+  velocitySource?: VelocitySource;
+  pressure?: number;
+  motionDelta?: number;
+}
 interface Point { x: number; y: number }
 interface MotionSample { time: number; magnitude: number }
 interface PointerState {
@@ -19,10 +29,14 @@ interface PointerState {
   keyId: string | null;
   motionStart: number;
   velocity?: number;
+  velocitySource: VelocitySource;
+  pressure?: number;
+  motionDelta?: number;
 }
 interface InputCallbacks {
   onKeyPress?: (key: InputKey, pressed: boolean, velocity?: number) => void;
   onScroll?: (offset: number) => void;
+  onMotionPermissionChange?: (state: MotionPermissionState) => void;
 }
 interface DeviceMotionEventConstructorWithPermission {
   requestPermission?: () => Promise<'granted' | 'denied'>;
@@ -32,6 +46,7 @@ class InputController {
   container: HTMLElement;
   onKeyPress: NonNullable<InputCallbacks['onKeyPress']>;
   onScroll: NonNullable<InputCallbacks['onScroll']>;
+  onMotionPermissionChange: NonNullable<InputCallbacks['onMotionPermissionChange']>;
   activePointers = new Map<number, PointerState>();
   pressedKeys = new Set<string>();
   scrollOffset = 0;
@@ -43,6 +58,7 @@ class InputController {
   hitTestFn: ((x: number, y: number) => PianoKey | null) | null = null;
   motionSamples: MotionSample[] = [];
   motionPermissionRequested = false;
+  motionPermissionState: MotionPermissionState = 'unknown';
   private _handlers!: {
     down: (e: PointerEvent) => void;
     move: (e: PointerEvent) => void;
@@ -56,6 +72,7 @@ class InputController {
     this.container = container;
     this.onKeyPress = callbacks.onKeyPress || (() => {});
     this.onScroll = callbacks.onScroll || (() => {});
+    this.onMotionPermissionChange = callbacks.onMotionPermissionChange || (() => {});
     this._bindEvents();
   }
 
@@ -119,7 +136,7 @@ class InputController {
     e.preventDefault();
     try { this.container.setPointerCapture(e.pointerId); } catch (_) { /* Safari */ }
     this.container.focus();
-    this._requestMotionPermission();
+    this.requestMotionPermission().catch(() => {});
     const key = this._findKeyAtPoint(e.clientX, e.clientY);
     const isFirst = this.activePointers.size === 0;
     if (isFirst) {
@@ -131,6 +148,7 @@ class InputController {
       const primary = this.primaryPointerId === null ? undefined : this.activePointers.get(this.primaryPointerId);
       if (primary) primary.mode = 'note';
     }
+    const motionStart = performance.now();
     const pointer: PointerState = {
       pointerId: e.pointerId,
       startX: e.clientX,
@@ -141,8 +159,10 @@ class InputController {
       mode: isFirst && !this.scrollDisabled ? 'note-or-scroll' : 'note',
       key,
       keyId: key?.id || null,
-      motionStart: performance.now(),
+      motionStart,
+      velocitySource: 'default',
     };
+    this._updatePointerVelocity(pointer, e);
     this.activePointers.set(e.pointerId, pointer);
     this._syncPressedKeys(); // first finger starts immediately
   }
@@ -170,7 +190,7 @@ class InputController {
     const key = this._findKeyAtPoint(e.clientX, e.clientY);
     pointer.key = key;
     pointer.keyId = key?.id || null;
-    pointer.velocity = this._estimateVelocity(pointer.motionStart);
+    this._updatePointerVelocity(pointer, e);
     this._syncPressedKeys();
   }
 
@@ -204,7 +224,13 @@ class InputController {
     for (const pointer of this.activePointers.values()) {
       if (pointer.mode !== 'scroll' && pointer.keyId) {
         next.add(pointer.keyId);
-        keyObjects.set(pointer.keyId, { ...(pointer.key || { id: pointer.keyId }), velocity: pointer.velocity });
+        keyObjects.set(pointer.keyId, {
+          ...(pointer.key || { id: pointer.keyId }),
+          velocity: pointer.velocity,
+          velocitySource: pointer.velocitySource,
+          pressure: pointer.pressure,
+          motionDelta: pointer.motionDelta,
+        });
       }
     }
     for (const id of next) {
@@ -219,23 +245,72 @@ class InputController {
     this.pressedKeys = next;
   }
 
-  _requestMotionPermission() {
-    if (this.motionPermissionRequested) return;
+  async requestMotionPermission(): Promise<MotionPermissionState> {
+    if (this.motionPermissionState === 'granted') return 'granted';
     this.motionPermissionRequested = true;
     const constructor = window.DeviceMotionEvent as typeof DeviceMotionEvent & DeviceMotionEventConstructorWithPermission;
+    if (!constructor) return this._setMotionPermissionState('unavailable');
     const permission = constructor?.requestPermission;
-    if (typeof permission === 'function') permission.call(constructor).catch(() => {});
+    if (typeof permission !== 'function') return this._setMotionPermissionState('granted');
+    this._setMotionPermissionState('requesting');
+    try {
+      const result = await permission.call(constructor);
+      return this._setMotionPermissionState(result === 'granted' ? 'granted' : 'denied');
+    } catch (_) {
+      return this._setMotionPermissionState('denied');
+    }
   }
 
-  _estimateVelocity(startTime: number): number | undefined {
-    const samples = this.motionSamples.filter(sample => sample.time >= startTime);
+  _setMotionPermissionState(state: MotionPermissionState): MotionPermissionState {
+    this.motionPermissionState = state;
+    this.onMotionPermissionChange(state);
+    return state;
+  }
+
+  _estimateVelocity(startTime: number): { velocity: number; delta: number } | undefined {
+    // A physical tap often reaches the accelerometer just before the browser
+    // dispatches pointerdown. Include that leading window so the very first
+    // note receives velocity instead of waiting for pointermove.
+    const samples = this.motionSamples.filter(sample =>
+      sample.time >= startTime - 100 && sample.time <= startTime + 100
+    );
     if (!samples.length) return undefined;
     const baseline = this.motionSamples
-      .filter(sample => sample.time < startTime && sample.time >= startTime - 100)
+      .filter(sample => sample.time < startTime - 100 && sample.time >= startTime - 250)
       .map(sample => sample.magnitude);
     const base = baseline.length ? baseline.reduce((a, b) => a + b, 0) / baseline.length : samples[0].magnitude;
     const delta = Math.max(0, ...samples.map(sample => sample.magnitude - base));
-    return Math.round(35 + Math.min(delta / 4.5, 1) * 92);
+    return {
+      velocity: Math.round(35 + Math.min(delta / MOTION_FULL_SCALE, 1) * 92),
+      delta,
+    };
+  }
+
+  _velocityFromPressure(e: PointerEvent): number | undefined {
+    const pressure = e.pressure;
+    if (!Number.isFinite(pressure) || pressure <= 0) return undefined;
+    // Browsers report 0.5 as the generic active-touch value when the hardware
+    // has no pressure sensor. Treat it as unavailable for fingers, while still
+    // accepting real Apple Pencil pressure and non-default touch values.
+    if (e.pointerType !== 'pen' && Math.abs(pressure - 0.5) < 0.01) return undefined;
+    return Math.round(35 + Math.max(0, Math.min(1, pressure)) * 92);
+  }
+
+  _updatePointerVelocity(pointer: PointerState, event: PointerEvent): void {
+    pointer.pressure = Number.isFinite(event.pressure) ? event.pressure : undefined;
+    const pressureVelocity = this._velocityFromPressure(event);
+    const motion = this._estimateVelocity(pointer.motionStart);
+    pointer.motionDelta = motion?.delta;
+    if (pressureVelocity !== undefined) {
+      pointer.velocity = pressureVelocity;
+      pointer.velocitySource = 'pressure';
+    } else if (motion) {
+      pointer.velocity = motion.velocity;
+      pointer.velocitySource = 'motion';
+    } else {
+      pointer.velocity = undefined;
+      pointer.velocitySource = 'default';
+    }
   }
 
   releaseAll(): void {
@@ -255,4 +330,4 @@ class InputController {
 }
 
 export { InputController };
-export type { InputCallbacks, InputKey };
+export type { InputCallbacks, InputKey, MotionPermissionState, VelocitySource };

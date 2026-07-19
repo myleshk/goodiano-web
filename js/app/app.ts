@@ -5,10 +5,10 @@
  */
 
 import { generateFullPianoKeys } from './model';
-import { PianoAudioEngine } from './audio';
+import { DEFAULT_VELOCITY, PianoAudioEngine } from './audio';
 import { computeLayout, hitTest, findMiddleCIndex, getWhiteKeyWidth, scrollToKey } from './keyboard';
 import { InputController } from './input';
-import type { InputKey } from './input';
+import type { InputKey, MotionPermissionState } from './input';
 import { KeyboardRenderer } from './render';
 import type { KeyboardLayout } from './keyboard';
 import type { PianoKey } from './model';
@@ -28,6 +28,7 @@ class GoodianoApp {
   keyboardContent!: HTMLElement;
   miniMapEl!: HTMLElement;
   loadingOverlay: HTMLElement | null = null;
+  velocityDebug: HTMLElement | null = null;
   private _resizeObserver: ResizeObserver | null = null;
 
   constructor() {
@@ -43,6 +44,7 @@ class GoodianoApp {
     this.keyboardContent = this._requiredElement('.keyboard-content');
     this.miniMapEl = this._requiredElement('.minimap-container');
     this.loadingOverlay = document.querySelector('.loading-overlay');
+    this.velocityDebug = document.querySelector('.velocity-debug');
     const loadingOverlay = this.loadingOverlay;
     loadingOverlay?.querySelector('.loading-retry')?.addEventListener('click', () => {
       loadingOverlay.classList.remove('recoverable-error');
@@ -79,7 +81,11 @@ class GoodianoApp {
     this.input = new InputController(this.scrollContainer, {
       onKeyPress: (key: InputKey, pressed: boolean, velocity?: number) => this._handleKeyPress(key, pressed, velocity),
       onScroll: (offset) => this._handleScroll(offset),
+      onMotionPermissionChange: state => this._updateMotionPermissionDebug(state),
     });
+
+    this.velocityDebug?.querySelector<HTMLButtonElement>('.motion-permission-button')
+      ?.addEventListener('click', () => this.input?.requestMotionPermission());
 
     this.input.setConverters(
       (cx, cy) => this._screenToKeyboard(cx, cy),
@@ -192,10 +198,39 @@ class GoodianoApp {
     if (pressed) {
       this.audio.ensureRunning().catch(() => {});
       this.audio.noteOn(key.id, this._getMidiNote(key.id), velocity);
+      this._updateVelocityDebug(key, velocity ?? DEFAULT_VELOCITY);
     } else {
       this.audio.noteOff(key.id);
     }
     this.renderer.setPressed(key.id, pressed);
+  }
+
+  _updateVelocityDebug(key: InputKey, velocity: number): void {
+    if (!this.velocityDebug) return;
+    const value = this.velocityDebug.querySelector<HTMLElement>('.velocity-debug-value');
+    const source = this.velocityDebug.querySelector<HTMLElement>('.velocity-debug-source');
+    const raw = this.velocityDebug.querySelector<HTMLElement>('.velocity-debug-raw');
+    const fill = this.velocityDebug.querySelector<HTMLElement>('.velocity-debug-fill');
+    if (value) value.textContent = `${key.id}  ·  velocity ${velocity}`;
+    if (source) source.textContent = `source: ${key.velocitySource ?? 'default'}`;
+    if (raw) {
+      const pressure = key.pressure == null ? '--' : key.pressure.toFixed(2);
+      const motion = key.motionDelta == null ? '--' : key.motionDelta.toFixed(3);
+      raw.textContent = `pressure ${pressure}  ·  motion Δ ${motion}`;
+    }
+    if (fill) fill.style.width = `${velocity / 127 * 100}%`;
+  }
+
+  _updateMotionPermissionDebug(state: MotionPermissionState): void {
+    if (!this.velocityDebug) return;
+    const status = this.velocityDebug.querySelector<HTMLElement>('.motion-permission-status');
+    const button = this.velocityDebug.querySelector<HTMLButtonElement>('.motion-permission-button');
+    if (status) status.textContent = `motion permission: ${state}`;
+    if (button) {
+      button.textContent = state === 'requesting' ? 'Requesting…' : 'Enable Motion';
+      button.disabled = state === 'requesting';
+      button.hidden = state === 'granted' || state === 'unavailable';
+    }
   }
 
   _handleScroll(offset: number): void {

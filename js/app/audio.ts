@@ -6,7 +6,9 @@
 
 const MIDI_CHANNEL = 0;
 const DEFAULT_VELOCITY = 100;
-const MASTER_GAIN = 10; // Amplified to match iOS engine volume
+// Keep headroom for velocity differences. The SF2 reaches full-scale PCM, so
+// a 10x boost clipped soft and loud strikes to nearly the same output level.
+const MASTER_GAIN = 1;
 const RELEASE_SECONDS = 0.2;
 
 type AudioEngineState = 'loading' | 'awaitingGesture' | 'ready' | 'error';
@@ -519,5 +521,5 @@ class PianoAudioEngine {
   }
 }
 
-export { PianoAudioEngine };
+export { DEFAULT_VELOCITY, PianoAudioEngine };
 export type { AudioEngineState };
