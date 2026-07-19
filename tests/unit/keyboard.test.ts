@@ -14,10 +14,12 @@ describe('88-key keyboard model and layout', () => {
     expect(layout.blackKeys).toHaveLength(36);
   });
 
-  it('uses preceding-white indices for black keys', () => {
-    expect(layout.blackKeyWhiteIndex['A#0']).toBe(0);
-    expect(layout.blackKeyWhiteIndex['C#1']).toBe(2);
-    expect(hitTest(0, 10, 50, 300, layout)?.id).toBe('A#0');
+  it('centers black keys on the boundary after their preceding white key', () => {
+    expect(layout.blackKeyWhiteIndex['A#0']).toBe(1);
+    expect(layout.blackKeyWhiteIndex['C#1']).toBe(3);
+    expect(hitTest(0, 10, 50, 300, layout)?.id).toBe('A0');
+    expect(hitTest(50, 10, 50, 300, layout)?.id).toBe('A#0');
+    expect(hitTest(150, 10, 50, 300, layout)?.id).toBe('C#1');
   });
 
   it('gives partial edge octaves half-width mini-map blocks', () => {

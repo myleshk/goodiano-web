@@ -16,16 +16,14 @@ function computeLayout(keys: PianoKey[]): KeyboardLayout {
   const whiteIndexMap = new Map<string, number>();
   whiteKeys.forEach((k, i) => whiteIndexMap.set(k.id, i));
 
-  // For each black key, find the index of the preceding white key. The black
-  // key is centered on the boundary after that white key (the iOS layout uses
-  // the index directly, not index + 0.5).
+  // For each black key, record the number of white keys preceding it. This is
+  // the x-boundary where the black key is centered: A#0 follows one white key,
+  // C#1 follows three, and so on. It matches KeyboardView.swift's whiteCount.
   const blackKeyWhiteIndex: Record<string, number> = {};
-  for (const bk of blackKeys) {
-    // A black key sits between the white key below and above.
-    // The white key below is the same note letter without sharp (e.g., C for C#)
-    const belowName = bk.pitch.name.charAt(0) + bk.octave;
-    const wIdx = whiteIndexMap.get(belowName);
-    blackKeyWhiteIndex[bk.id] = wIdx != null ? wIdx : 0;
+  let precedingWhiteCount = 0;
+  for (const key of keys) {
+    if (key.isBlack) blackKeyWhiteIndex[key.id] = precedingWhiteCount;
+    else precedingWhiteCount += 1;
   }
 
   // Group white keys into octave blocks (for mini-map)
