@@ -207,10 +207,11 @@ class KeyboardRenderer {
 
     const { octaveBlocks, whiteKeyCount, whiteKeys } = this.layout;
 
+    const totalUnits = octaveBlocks.reduce((sum, block) => sum + (block.widthMultiplier || 1), 0);
     for (let i = 0; i < octaveBlocks.length; i++) {
       const block = octaveBlocks[i];
       const color = OCTAVE_COLORS[i % OCTAVE_COLORS.length];
-      const widthPct = ((block.count / whiteKeyCount) * 100).toFixed(2);
+      const widthPct = (((block.widthMultiplier || 1) / totalUnits) * 100).toFixed(4);
 
       const seg = document.createElement('div');
       seg.style.flex = `0 0 ${widthPct}%`;

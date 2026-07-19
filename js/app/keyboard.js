@@ -16,14 +16,16 @@ function computeLayout(keys) {
   const whiteIndexMap = new Map();
   whiteKeys.forEach((k, i) => whiteIndexMap.set(k.id, i));
 
-  // For each black key, find its position relative to preceding white keys
+  // For each black key, find the index of the preceding white key. The black
+  // key is centered on the boundary after that white key (the iOS layout uses
+  // the index directly, not index + 0.5).
   const blackKeyWhiteIndex = {};
   for (const bk of blackKeys) {
     // A black key sits between the white key below and above.
     // The white key below is the same note letter without sharp (e.g., C for C#)
     const belowName = bk.pitch.name.charAt(0) + bk.octave;
     const wIdx = whiteIndexMap.get(belowName);
-    blackKeyWhiteIndex[bk.id] = wIdx != null ? wIdx + 0.5 : 0;
+    blackKeyWhiteIndex[bk.id] = wIdx != null ? wIdx : 0;
   }
 
   // Group white keys into octave blocks (for mini-map)
@@ -39,7 +41,8 @@ function computeLayout(keys) {
           octave: currentOctave,
           startIndex: currentStart,
           endIndex: i - 1,
-          count: i - currentStart,
+        count: i - currentStart,
+        widthMultiplier: i - currentStart < 7 ? 0.5 : 1,
         });
       }
       currentOctave = wk.octave;
@@ -53,14 +56,25 @@ function computeLayout(keys) {
       startIndex: currentStart,
       endIndex: whiteKeys.length - 1,
       count: whiteKeys.length - currentStart,
+      widthMultiplier: whiteKeys.length - currentStart < 7 ? 0.5 : 1,
     });
   }
 
   // Mini-map X positions (normalized 0-1)
-  const miniMapKeyXs = whiteKeys.map((wk, i) => ({
-    keyId: wk.id,
-    x: i / Math.max(whiteKeys.length - 1, 1),
-  }));
+  const totalUnits = octaveBlocks.reduce((sum, block) => sum + block.widthMultiplier, 0);
+  let accumulated = 0;
+  const miniMapKeyXs = [];
+  for (const block of octaveBlocks) {
+    const blockWidth = totalUnits ? block.widthMultiplier / totalUnits : 0;
+    const count = Math.max(block.count, 1);
+    for (let i = 0; i < block.count; i++) {
+      miniMapKeyXs.push({
+        keyId: whiteKeys[block.startIndex + i].id,
+        x: accumulated / totalUnits + blockWidth * i / count,
+      });
+    }
+    accumulated += block.widthMultiplier;
+  }
 
   return {
     keys,

@@ -1,74 +1,55 @@
-/**
- * Goodiano PWA Service Worker
- * Caches all assets for offline playability, especially the 14MB SF2.
- */
-
-const CACHE_NAME = 'goodiano-v1';
-const ASSETS_TO_CACHE = [
-  '/',
-  '/index.html',
-  '/css/main.css',
-  '/manifest.json',
-  '/js/app/model.js',
-  '/js/app/audio.js',
-  '/js/app/keyboard.js',
-  '/js/app/input.js',
-  '/js/app/render.js',
-  '/js/app/app.js',
-  '/assets/yahama_U1.sf2',
-  '/assets/icons/icon-192.png',
-  '/assets/icons/icon-512.png',
-  '/assets/icons/icon-180.png',
+/* Goodiano offline shell. All paths are resolved from the installed scope so
+ * the app works when hosted below a domain subpath. */
+const CACHE_NAME = 'goodiano-v2';
+const SHELL = [
+  './', './index.html', './css/main.css', './manifest.json',
+  './js/app/model.js', './js/app/audio.js', './js/app/keyboard.js',
+  './js/app/input.js', './js/app/render.js', './js/app/app.js',
+  './assets/icons/icon-192.png', './assets/icons/icon-512.png', './assets/icons/icon-180.png',
 ];
+const toURL = path => new URL(path, self.registration.scope).href;
 
-// Install: pre-cache all assets
-self.addEventListener('install', (event) => {
-  event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => {
-      return cache.addAll(ASSETS_TO_CACHE);
-    })
-  );
+self.addEventListener('install', event => {
+  event.waitUntil((async () => {
+    const cache = await caches.open(CACHE_NAME);
+    // A SoundFont is cached only after a successful fetch. This prevents a
+    // storage failure from making the entire application shell un-installable.
+    await cache.addAll(SHELL.map(toURL));
+  })());
   self.skipWaiting();
 });
 
-// Activate: clean old caches
-self.addEventListener('activate', (event) => {
-  event.waitUntil(
-    caches.keys().then((keys) => {
-      return Promise.all(
-        keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k))
-      );
-    })
-  );
-  self.clients.claim();
+self.addEventListener('activate', event => {
+  event.waitUntil((async () => {
+    const keys = await caches.keys();
+    await Promise.all(keys.filter(key => key !== CACHE_NAME).map(key => caches.delete(key)));
+    await self.clients.claim();
+  })());
 });
 
-// Fetch: cache-first for SF2, network-first for others
-self.addEventListener('fetch', (event) => {
-  const url = new URL(event.request.url);
-
-  // Cache-first for large assets (SF2, icons)
-  if (url.pathname.endsWith('.sf2') || url.pathname.includes('/assets/icons/')) {
-    event.respondWith(
-      caches.match(event.request).then((cached) => {
-        return cached || fetch(event.request).then((response) => {
-          const clone = response.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
-          return response;
-        });
-      })
-    );
-    return;
-  }
-
-  // Network-first for code files (get updates when online, fall back to cache)
-  event.respondWith(
-    fetch(event.request)
-      .then((response) => {
-        const clone = response.clone();
-        caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
-        return response;
-      })
-      .catch(() => caches.match(event.request))
-  );
+self.addEventListener('fetch', event => {
+  if (event.request.method !== 'GET') return;
+  const requestURL = new URL(event.request.url);
+  const isSoundFont = requestURL.pathname.endsWith('.sf2');
+  event.respondWith((async () => {
+    const cached = await caches.match(event.request);
+    if (cached) return cached;
+    try {
+      const response = await fetch(event.request);
+      if (!response.ok) return response;
+      const cache = await caches.open(CACHE_NAME);
+      try {
+        await cache.put(event.request, response.clone());
+      } catch (error) {
+        if (isSoundFont) {
+          const clients = await self.clients.matchAll();
+          clients.forEach(client => client.postMessage({ type: 'CACHE_ERROR', asset: 'SoundFont' }));
+        }
+      }
+      return response;
+    } catch (error) {
+      if (event.request.mode === 'navigate') return caches.match(toURL('./index.html'));
+      throw error;
+    }
+  })());
 });

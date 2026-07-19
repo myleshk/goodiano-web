@@ -1,90 +1,69 @@
 /**
- * Goodiano Input Controller
- * Unified pointer/touch handling + horizontal scroll via single-finger drag.
- * Replaces the UIKit PianoScrollView bridge from the iOS app.
+ * Pointer input for the piano. Each pointer owns its current key; the
+ * rendered/audio pressed set is derived from every active pointer.
  */
-
 class InputController {
-  /**
-   * @param {HTMLElement} container - the keyboard container element
-   * @param {object} callbacks
-   * @param {function} callbacks.onKeyPress - (key, pressed: boolean) => void
-   * @param {function} callbacks.onScroll - (offset: number) => void
-   */
-  constructor(container, callbacks) {
+  constructor(container, callbacks = {}) {
     this.container = container;
     this.onKeyPress = callbacks.onKeyPress || (() => {});
     this.onScroll = callbacks.onScroll || (() => {});
-
-    // Active touch/pointer state
-    this.activePointers = new Map(); // pointerId -> { keyId, clientX, clientY }
-    this.pressedKeys = new Set();    // currently pressed key IDs
-
-    // Scroll state
+    this.activePointers = new Map();
+    this.pressedKeys = new Set();
     this.scrollOffset = 0;
     this.maxScroll = 0;
-    this.isScrolling = false;
-    this.scrollStartX = 0;
-    this.scrollStartOffset = 0;
-    this.scrollPointerId = null;
-    this.hasMovedFromStart = false;
-    this.keyAtStart = null; // key hit when pointer went down
-
-    // Config
-    this.scrollThreshold = 8; // px to distinguish scroll from tap
-
-    // Conversion functions (set by render module)
+    this.scrollThreshold = 8;
+    this.primaryPointerId = null;
+    this.scrollDisabled = false;
     this.screenToKeyboardCoord = null;
     this.hitTestFn = null;
-
+    this.motionSamples = [];
+    this.motionPermissionRequested = false;
     this._bindEvents();
   }
 
   _bindEvents() {
     const el = this.container;
-
-    el.addEventListener('pointerdown', this._onPointerDown.bind(this), { passive: false });
-    el.addEventListener('pointermove', this._onPointerMove.bind(this), { passive: false });
-    el.addEventListener('pointerup', this._onPointerUp.bind(this));
-    el.addEventListener('pointercancel', this._onPointerUp.bind(this));
-    el.addEventListener('pointerleave', this._onPointerLeave.bind(this));
-    el.addEventListener('lostpointercapture', this._onPointerUp.bind(this));
-
-    // Prevent default browser gestures on the keyboard area
-    el.addEventListener('touchstart', e => {
-      if (e.target.closest('[data-key]')) {
-        e.preventDefault();
-      }
-    }, { passive: false });
-
-    el.addEventListener('touchmove', e => e.preventDefault(), { passive: false });
+    this._handlers = {
+      down: e => this._onPointerDown(e),
+      move: e => this._onPointerMove(e),
+      up: e => this._onPointerUp(e),
+      wheel: e => this._onWheel(e),
+    };
+    el.addEventListener('pointerdown', this._handlers.down, { passive: false });
+    el.addEventListener('pointermove', this._handlers.move, { passive: false });
+    el.addEventListener('pointerup', this._handlers.up);
+    el.addEventListener('pointercancel', this._handlers.up);
+    el.addEventListener('lostpointercapture', this._handlers.up);
+    el.addEventListener('wheel', this._handlers.wheel, { passive: false });
     el.addEventListener('gesturestart', e => e.preventDefault());
     el.addEventListener('gesturechange', e => e.preventDefault());
     el.addEventListener('gestureend', e => e.preventDefault());
-
-    // Mouse wheel for desktop scrolling
-    el.addEventListener('wheel', this._onWheel.bind(this), { passive: false });
+    this._onVisibilityChange = () => {
+      if (document.hidden) this.releaseAll();
+    };
+    document.addEventListener('visibilitychange', this._onVisibilityChange);
+    window.addEventListener('pagehide', this._onVisibilityChange);
+    window.addEventListener('orientationchange', () => this.releaseAll());
+    window.addEventListener('devicemotion', e => {
+      const a = e.accelerationIncludingGravity;
+      if (!a) return;
+      const magnitude = Math.hypot(a.x || 0, a.y || 0, a.z || 0);
+      this.motionSamples.push({ time: performance.now(), magnitude });
+      const cutoff = performance.now() - 1000;
+      this.motionSamples = this.motionSamples.filter(sample => sample.time >= cutoff);
+    }, { passive: true });
   }
 
-  /**
-   * Set coordinate converter and hit test function
-   */
   setConverters(screenToKeyboardCoord, hitTestFn) {
     this.screenToKeyboardCoord = screenToKeyboardCoord;
     this.hitTestFn = hitTestFn;
   }
 
-  /**
-   * Update max scroll range (called when layout changes)
-   */
   setMaxScroll(max) {
     this.maxScroll = Math.max(0, max);
-    this.scrollOffset = Math.min(this.scrollOffset, this.maxScroll);
+    this.setScrollOffset(this.scrollOffset);
   }
 
-  /**
-   * Programmatically set scroll offset
-   */
   setScrollOffset(offset) {
     this.scrollOffset = Math.max(0, Math.min(this.maxScroll, offset));
     this.onScroll(this.scrollOffset);
@@ -92,176 +71,137 @@ class InputController {
 
   _findKeyAtPoint(clientX, clientY) {
     if (!this.screenToKeyboardCoord || !this.hitTestFn) return null;
-    const kb = this.screenToKeyboardCoord(clientX, clientY);
-    if (!kb) return null;
-    return this.hitTestFn(kb.x, kb.y);
+    const point = this.screenToKeyboardCoord(clientX, clientY);
+    return point ? this.hitTestFn(point.x, point.y) : null;
   }
 
   _onPointerDown(e) {
-    const el = this.container;
-    el.setPointerCapture(e.pointerId);
-    el.focus();
-
+    e.preventDefault();
+    try { this.container.setPointerCapture(e.pointerId); } catch (_) { /* Safari */ }
+    this.container.focus();
+    this._requestMotionPermission();
     const key = this._findKeyAtPoint(e.clientX, e.clientY);
-    this.keyAtStart = key;
-
-    // Single-finger: could be scroll or note
-    if (this.activePointers.size === 0) {
-      this.scrollPointerId = e.pointerId;
-      this.scrollStartX = e.clientX;
-      this.scrollStartOffset = this.scrollOffset;
-      this.hasMovedFromStart = false;
-      this.isScrolling = false;
+    const isFirst = this.activePointers.size === 0;
+    if (isFirst) {
+      this.primaryPointerId = e.pointerId;
+      this.scrollDisabled = false;
+    } else {
+      // Chords always win over scrolling. Existing pointers remain tracked.
+      this.scrollDisabled = true;
+      const primary = this.activePointers.get(this.primaryPointerId);
+      if (primary) primary.mode = 'note';
     }
-
-    // Multiple pointers: cancel scroll, treat as notes
-    if (this.activePointers.size >= 1) {
-      this.isScrolling = true;
-    }
-
-    this.activePointers.set(e.pointerId, {
-      clientX: e.clientX,
-      clientY: e.clientY,
-      keyId: key ? key.id : null,
-    });
-
-    // Immediately fire note if we have a key and aren't potentially scrolling
-    if (key && this.activePointers.size > 1) {
-      this._pressKey(key);
-    }
+    const pointer = {
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+      lastX: e.clientX,
+      lastY: e.clientY,
+      startOffset: this.scrollOffset,
+      mode: isFirst && !this.scrollDisabled ? 'note-or-scroll' : 'note',
+      key,
+      keyId: key?.id || null,
+      motionStart: performance.now(),
+    };
+    this.activePointers.set(e.pointerId, pointer);
+    this._syncPressedKeys(); // first finger starts immediately
   }
 
   _onPointerMove(e) {
-    const ptr = this.activePointers.get(e.pointerId);
-    if (!ptr) return;
+    const pointer = this.activePointers.get(e.pointerId);
+    if (!pointer) return;
+    e.preventDefault();
+    pointer.lastX = e.clientX;
+    pointer.lastY = e.clientY;
+    const dx = e.clientX - pointer.startX;
+    const dy = e.clientY - pointer.startY;
 
-    ptr.clientX = e.clientX;
-    ptr.clientY = e.clientY;
-
-    const key = this._findKeyAtPoint(e.clientX, e.clientY);
-    ptr.keyId = key ? key.id : null;
-
-    // Handle scroll for primary pointer
-    if (e.pointerId === this.scrollPointerId && !this.isScrolling) {
-      const dx = e.clientX - this.scrollStartX;
-
-      if (!this.hasMovedFromStart && Math.abs(dx) > this.scrollThreshold) {
-        this.isScrolling = true;
-        // Release the start key if we started scrolling from a key
-        if (this.keyAtStart && this.pressedKeys.has(this.keyAtStart.id)) {
-          this._releaseKey(this.keyAtStart);
-        }
-      }
-
-      if (this.isScrolling) {
-        let newOffset = this.scrollStartOffset - dx;
-        newOffset = Math.max(0, Math.min(this.maxScroll, newOffset));
-        this.scrollOffset = newOffset;
-        this.onScroll(newOffset);
-        return;
-      }
-    }
-
-    // Not scrolling: track key state
-    if (!this.isScrolling || this.activePointers.size > 1) {
+    if (pointer.mode === 'note-or-scroll' && !this.scrollDisabled &&
+        Math.abs(dx) > this.scrollThreshold && Math.abs(dx) >= Math.abs(dy)) {
+      pointer.mode = 'scroll';
+      pointer.key = null;
+      pointer.keyId = null;
       this._syncPressedKeys();
     }
+    if (pointer.mode === 'scroll') {
+      this.setScrollOffset(pointer.startOffset - dx);
+      return;
+    }
+    const key = this._findKeyAtPoint(e.clientX, e.clientY);
+    pointer.key = key;
+    pointer.keyId = key?.id || null;
+    pointer.velocity = this._estimateVelocity(pointer.motionStart);
+    this._syncPressedKeys();
   }
 
   _onPointerUp(e) {
-    this.container.releasePointerCapture(e.pointerId);
-    const ptr = this.activePointers.get(e.pointerId);
+    const pointer = this.activePointers.get(e.pointerId);
+    if (!pointer) return;
+    try { this.container.releasePointerCapture(e.pointerId); } catch (_) { /* Safari */ }
     this.activePointers.delete(e.pointerId);
-
-    if (e.pointerId === this.scrollPointerId) {
-      // If we never scrolled, treat as tap
-      if (!this.isScrolling && this.pressedKeys.size === 0 && ptr?.keyId && this.keyAtStart) {
-        this._pressKey(this.keyAtStart);
-        this._releaseKey(this.keyAtStart);
-      }
-      this.scrollPointerId = null;
-      this.isScrolling = false;
-    }
-
-    // Release any keys held by this pointer
-    if (ptr?.keyId && this.pressedKeys.has(ptr.keyId)) {
-      const keyObj = this.keyAtStart; // approximate
-      this._releaseKey(keyObj || { id: ptr.keyId });
-    }
-
     this._syncPressedKeys();
-  }
-
-  _onPointerLeave(e) {
-    // Similar to pointer up
-    const ptr = this.activePointers.get(e.pointerId);
-    if (ptr?.keyId && this.pressedKeys.has(ptr.keyId)) {
-      const keyObj = this.keyAtStart;
-      this._releaseKey(keyObj || { id: ptr.keyId });
+    if (this.activePointers.size === 0) {
+      this.primaryPointerId = null;
+      this.scrollDisabled = false;
     }
-    this.activePointers.delete(e.pointerId);
-    if (e.pointerId === this.scrollPointerId) {
-      this.scrollPointerId = null;
-      this.isScrolling = false;
-    }
-    this._syncPressedKeys();
   }
 
   _onWheel(e) {
     e.preventDefault();
-    let newOffset = this.scrollOffset + e.deltaX + e.deltaY;
-    newOffset = Math.max(0, Math.min(this.maxScroll, newOffset));
-    this.scrollOffset = newOffset;
-    this.onScroll(newOffset);
+    this.setScrollOffset(this.scrollOffset + (e.deltaX || e.deltaY));
   }
 
-  /**
-   * Compare current active pointers against pressedKeys set,
-   * fire onKeyPress for presses and releases.
-   * Port of KeyboardView.swift syncPressedKeys()
-   */
   _syncPressedKeys() {
-    const currentKeyIds = new Set();
-    for (const ptr of this.activePointers.values()) {
-      if (ptr.keyId) currentKeyIds.add(ptr.keyId);
-    }
-
-    // Find new presses
-    for (const kid of currentKeyIds) {
-      if (!this.pressedKeys.has(kid)) {
-        this.pressedKeys.add(kid);
-        this.onKeyPress({ id: kid }, true);
+    const next = new Set();
+    const keyObjects = new Map();
+    for (const pointer of this.activePointers.values()) {
+      if (pointer.mode !== 'scroll' && pointer.keyId) {
+        next.add(pointer.keyId);
+        keyObjects.set(pointer.keyId, { ...(pointer.key || { id: pointer.keyId }), velocity: pointer.velocity });
       }
     }
-
-    // Find releases
-    for (const kid of this.pressedKeys) {
-      if (!currentKeyIds.has(kid)) {
-        this.pressedKeys.delete(kid);
-        this.onKeyPress({ id: kid }, false);
+    for (const id of next) {
+      if (!this.pressedKeys.has(id)) {
+        const key = keyObjects.get(id) || { id };
+        this.onKeyPress(key, true, key.velocity);
       }
     }
+    for (const id of this.pressedKeys) {
+      if (!next.has(id)) this.onKeyPress({ id }, false);
+    }
+    this.pressedKeys = next;
   }
 
-  _pressKey(key) {
-    if (this.pressedKeys.has(key.id)) return;
-    this.pressedKeys.add(key.id);
-    this.onKeyPress(key, true);
+  _requestMotionPermission() {
+    if (this.motionPermissionRequested) return;
+    this.motionPermissionRequested = true;
+    const permission = window.DeviceMotionEvent?.requestPermission;
+    if (typeof permission === 'function') permission.call(window.DeviceMotionEvent).catch(() => {});
   }
 
-  _releaseKey(key) {
-    if (!this.pressedKeys.has(key.id)) return;
-    this.pressedKeys.delete(key.id);
-    this.onKeyPress(key, false);
+  _estimateVelocity(startTime) {
+    const samples = this.motionSamples.filter(sample => sample.time >= startTime);
+    if (!samples.length) return undefined;
+    const baseline = this.motionSamples
+      .filter(sample => sample.time < startTime && sample.time >= startTime - 100)
+      .map(sample => sample.magnitude);
+    const base = baseline.length ? baseline.reduce((a, b) => a + b, 0) / baseline.length : samples[0].magnitude;
+    const delta = Math.max(0, ...samples.map(sample => sample.magnitude - base));
+    return Math.round(35 + Math.min(delta / 4.5, 1) * 92);
   }
 
-  /**
-   * Cleanup
-   */
-  destroy() {
-    // Pointer events are bound to container; garbage collection handles cleanup
+  releaseAll() {
     this.activePointers.clear();
+    for (const id of this.pressedKeys) this.onKeyPress({ id }, false);
     this.pressedKeys.clear();
+    this.primaryPointerId = null;
+    this.scrollDisabled = false;
+  }
+
+  destroy() {
+    this.releaseAll();
+    document.removeEventListener('visibilitychange', this._onVisibilityChange);
+    window.removeEventListener('pagehide', this._onVisibilityChange);
   }
 }
 

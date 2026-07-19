@@ -2,7 +2,7 @@
   "name": "Goodiano",
   "short_name": "Goodiano",
   "description": "Virtual piano keyboard with realistic Yamaha U1 grand piano sound",
-  "start_url": "/",
+  "start_url": ".",
   "display": "standalone",
   "orientation": "any",
   "background_color": "#000000",

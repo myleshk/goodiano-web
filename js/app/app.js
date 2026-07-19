@@ -32,6 +32,22 @@ class GoodianoApp {
     this.keyboardContent = document.querySelector('.keyboard-content');
     this.miniMapEl = document.querySelector('.minimap-container');
     this.loadingOverlay = document.querySelector('.loading-overlay');
+    this.loadingOverlay?.querySelector('.loading-retry')?.addEventListener('click', () => {
+      this.loadingOverlay.classList.remove('recoverable-error');
+      const text = this.loadingOverlay.querySelector('.loading-text');
+      if (text) text.textContent = 'Retrying audio load…';
+      this._loadAudio().then(() => {
+        this._hideLoading();
+        this._scrollToC4();
+      }).catch(() => {});
+    });
+    navigator.serviceWorker?.addEventListener('message', event => {
+      if (event.data?.type === 'CACHE_ERROR' && this.loadingOverlay) {
+        const text = this.loadingOverlay.querySelector('.loading-text');
+        if (text) text.textContent = 'Audio loaded, but could not be saved offline. Tap to retry.';
+        this.loadingOverlay.classList.add('recoverable-error');
+      }
+    });
 
     // Init renderer
     this.renderer = new KeyboardRenderer(
@@ -49,7 +65,7 @@ class GoodianoApp {
 
     // Init input
     this.input = new InputController(this.scrollContainer, {
-      onKeyPress: (key, pressed) => this._handleKeyPress(key, pressed),
+      onKeyPress: (key, pressed, velocity) => this._handleKeyPress(key, pressed, velocity),
       onScroll: (offset) => this._handleScroll(offset),
     });
 
@@ -58,19 +74,30 @@ class GoodianoApp {
       (x, y) => hitTest(x, y, this.whiteKeyWidth, this.keyboardHeight, this.layout)
     );
 
-    // Load audio (shows loading overlay)
-    await this._loadAudio();
-
-    // Hide loading, auto-scroll to C4
-    this._hideLoading();
-    this._scrollToC4();
-
     // Attach resize listener
     this._resizeObserver = new ResizeObserver(() => this._recalculateLayout());
     this._resizeObserver.observe(this.keyboardArea);
 
-    // Initial scroll
+    // Start fetching immediately. AudioContext may remain suspended until the
+    // first pointer gesture, but parsing/caching should never wait for touch.
+    this._loadAudio().then(() => {
+      this._hideLoading();
+      this._scrollToC4();
+    }).catch(() => {});
+
     this._handleScroll(0);
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) {
+        this.input?.releaseAll();
+        this.audio.allNotesOff();
+      } else {
+        this.audio.ensureRunning().catch(() => {});
+      }
+    });
+    window.addEventListener('pagehide', () => {
+      this.input?.releaseAll();
+      this.audio.allNotesOff();
+    });
   }
 
   async _loadAudio() {
@@ -81,8 +108,10 @@ class GoodianoApp {
       // Show error state
       if (this.loadingOverlay) {
         const text = this.loadingOverlay.querySelector('.loading-text');
-        if (text) text.textContent = 'Failed to load audio. Refresh to retry.';
+        if (text) text.textContent = 'Audio failed to load. Tap to retry.';
+        this.loadingOverlay.classList.add('recoverable-error');
       }
+      throw err;
     }
   }
 
@@ -152,9 +181,10 @@ class GoodianoApp {
     };
   }
 
-  _handleKeyPress(key, pressed) {
+  _handleKeyPress(key, pressed, velocity) {
     if (pressed) {
-      this.audio.noteOn(key.id, this._getMidiNote(key.id));
+      this.audio.ensureRunning().catch(() => {});
+      this.audio.noteOn(key.id, this._getMidiNote(key.id), velocity);
     } else {
       this.audio.noteOff(key.id);
     }
@@ -175,33 +205,10 @@ class GoodianoApp {
 // Bootstrap
 const app = new GoodianoApp();
 
-// iOS Safari requires AudioContext init from user gesture
-document.addEventListener('DOMContentLoaded', () => {
-  // Pre-warm the audio engine (but don't load SF2 until gesture)
-  const warmup = () => {
-    app.audio.init();
-    document.removeEventListener('touchstart', warmup);
-    document.removeEventListener('click', warmup);
-  };
-  document.addEventListener('touchstart', warmup, { once: true });
-  document.addEventListener('click', warmup, { once: true });
-});
-
-// Start app when user first interacts (after DOM is ready)
-let appStarted = false;
-const startApp = async () => {
-  if (appStarted) return;
-  appStarted = true;
-  document.removeEventListener('touchstart', startApp);
-  document.removeEventListener('click', startApp);
-  // Ensure DOM elements exist (module scripts are deferred, so by first touch DOM is ready)
-  if (!document.querySelector('.keyboard-area')) {
-    await new Promise(r => setTimeout(r, 50));
-  }
-  await app.init();
-};
-
-document.addEventListener('touchstart', startApp, { once: true });
-document.addEventListener('click', startApp, { once: true });
+// Bootstrap immediately so the shell and SoundFont can be cached before the
+// first interaction. A gesture is used only to resume the AudioContext.
+const startApp = () => app.init().catch(error => console.error('Goodiano init failed', error));
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', startApp, { once: true });
+else startApp();
 
 export { GoodianoApp };

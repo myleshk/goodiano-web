@@ -15,19 +15,49 @@ class PianoAudioEngine {
     this.samples = null;      // Map: sampleIndex -> AudioBuffer
     this.zones = [];          // [{ loKey, hiKey, sampleIndex, rootKey, sampleRate }]
     this.activeNotes = new Map(); // keyId -> { source, gain, midiNote }
+    this.queuedNotes = new Map(); // held keys waiting for SF2/context readiness
+    this.heldNotes = new Map();   // keys currently held by the input layer
     this.loaded = false;
     this.loading = false;
+    this.state = 'loading';
   }
 
   /**
    * Initialize AudioContext (must be called from user gesture on iOS)
    */
   async init() {
-    if (this.ctx) return;
-    this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+    if (this.ctx) return this.ctx;
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) {
+      this.state = 'error';
+      throw new Error('Web Audio is unavailable in this browser');
+    }
+    this.ctx = new AudioContextClass();
     this.masterGain = this.ctx.createGain();
     this.masterGain.gain.value = MASTER_GAIN;
     this.masterGain.connect(this.ctx.destination);
+    this.state = this.ctx.state === 'running' ? 'ready' : 'awaitingGesture';
+    return this.ctx;
+  }
+
+  async ensureRunning() {
+    await this.init();
+    if (this.ctx.state === 'closed') throw new Error('AudioContext is closed');
+    const wasRunning = this.ctx.state === 'running';
+    if (this.ctx.state !== 'running') await this.ctx.resume();
+    if (this.ctx.state === 'running') {
+      this.state = this.loaded ? 'ready' : 'loading';
+      // Safari can suspend a context while fingers are still down. Rebuild
+      // those voices from the held-key snapshot after resuming.
+      if (!wasRunning) {
+        for (const [keyId, active] of this.activeNotes) this._stopNote(keyId, active);
+        for (const note of this.heldNotes.values()) this.queuedNotes.set(note.keyId, note);
+        this._flushQueuedNotes();
+      }
+    } else {
+      this.state = 'awaitingGesture';
+    }
+    return this.ctx.state === 'running';
   }
 
   /**
@@ -38,15 +68,22 @@ class PianoAudioEngine {
   async loadSoundFont(url) {
     if (this.loaded || this.loading) return;
     this.loading = true;
-
-    await this.init();
-    const response = await fetch(url);
-    const buffer = await response.arrayBuffer();
-    const data = new DataView(buffer);
-
-    this._parseSF2(data);
-    this.loaded = true;
-    this.loading = false;
+    try {
+      await this.init();
+      const response = await fetch(new URL(url, document.baseURI));
+      if (!response.ok) throw new Error(`SoundFont request failed (${response.status})`);
+      const buffer = await response.arrayBuffer();
+      if (buffer.byteLength < 12) throw new Error('SoundFont response is empty or truncated');
+      this._parseSF2(new DataView(buffer));
+      this.loaded = true;
+      this.state = this.ctx.state === 'running' ? 'ready' : 'awaitingGesture';
+      this._flushQueuedNotes();
+    } catch (error) {
+      this.state = 'error';
+      throw error;
+    } finally {
+      this.loading = false;
+    }
   }
 
   /**
@@ -348,13 +385,18 @@ class PianoAudioEngine {
    * @param {string} keyId - unique key identifier (e.g., "C4")
    * @param {number} midiNote - MIDI note number (0-127)
    */
-  noteOn(keyId, midiNote) {
-    if (!this.ctx || !this.samples) return;
+  noteOn(keyId, midiNote, velocity = DEFAULT_VELOCITY) {
+    const note = { keyId, midiNote, velocity };
+    this.heldNotes.set(keyId, note);
+    this.queuedNotes.set(keyId, note);
+    if (!this.ctx || !this.samples || this.ctx.state !== 'running') return;
+    this._startNote(note);
+  }
 
-    // Resume context if suspended (iOS requires user gesture)
-    if (this.ctx.state === 'suspended') {
-      this.ctx.resume();
-    }
+  _startNote({ keyId, midiNote, velocity = DEFAULT_VELOCITY }) {
+    if (!this.ctx || !this.samples) return;
+    const existing = this.activeNotes.get(keyId);
+    if (existing) this._stopNote(keyId, existing);
 
     const clampedNote = Math.max(0, Math.min(127, midiNote));
     const zone = this._findZone(clampedNote);
@@ -373,7 +415,7 @@ class PianoAudioEngine {
 
     // Per-note gain for future velocity support
     const gainNode = this.ctx.createGain();
-    gainNode.gain.value = 1.0;
+    gainNode.gain.value = Math.max(0, Math.min(127, velocity)) / 127;
     gainNode.connect(this.masterGain);
 
     source.connect(gainNode);
@@ -381,6 +423,12 @@ class PianoAudioEngine {
 
     // Store for noteOff
     this.activeNotes.set(keyId, { source, gain: gainNode, midiNote: clampedNote });
+    this.queuedNotes.delete(keyId);
+  }
+
+  _flushQueuedNotes() {
+    if (!this.ctx || this.ctx.state !== 'running' || !this.samples) return;
+    for (const note of this.queuedNotes.values()) this._startNote(note);
   }
 
   /**
@@ -388,9 +436,14 @@ class PianoAudioEngine {
    * @param {string} keyId
    */
   noteOff(keyId) {
+    this.heldNotes.delete(keyId);
+    this.queuedNotes.delete(keyId);
     const note = this.activeNotes.get(keyId);
     if (!note) return;
+    this._stopNote(keyId, note);
+  }
 
+  _stopNote(keyId, note) {
     try {
       note.source.stop(0);
     } catch (e) {
@@ -405,16 +458,16 @@ class PianoAudioEngine {
    * Force stop all active notes (for cleanup)
    */
   allNotesOff() {
-    for (const [keyId] of this.activeNotes) {
-      this.noteOff(keyId);
-    }
+    this.heldNotes.clear();
+    this.queuedNotes.clear();
+    for (const [keyId, note] of this.activeNotes) this._stopNote(keyId, note);
   }
 
   /**
    * Check if engine is ready to play
    */
   isReady() {
-    return this.loaded && this.ctx && this.ctx.state !== 'closed';
+    return this.state === 'ready' && this.loaded && this.ctx && this.ctx.state !== 'closed';
   }
 }
 
