@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { computeLayout, findMiddleCIndex, getViewportRange, hitTest, scrollToKey } from '../../js/app/keyboard';
+import { computeLayout, findMiddleCIndex, getMiniMapViewport, getViewportRange, hitTest, scrollToKey } from '../../js/app/keyboard';
 import { generateFullPianoKeys } from '../../js/app/model';
 
 describe('88-key keyboard model and layout', () => {
@@ -30,5 +30,15 @@ describe('88-key keyboard model and layout', () => {
     expect(scrollToKey(23, 50, 500, 2100)).toBe(925);
     expect(scrollToKey(0, 50, 500, 2100)).toBe(0);
     expect(getViewportRange(925, 50, 500, 52)).toEqual({ start: 18, end: 29 });
+  });
+
+  it('maps mini-map viewports through white-key positions, including partial octaves', () => {
+    expect(getMiniMapViewport(layout, 0, 50, 100)).toEqual({ start: 0, end: 0.0625 });
+
+    const c4Scroll = scrollToKey(findMiddleCIndex(layout), 50, 500, 2100);
+    expect(getMiniMapViewport(layout, c4Scroll, 50, 500)).toEqual({
+      start: 0.3571428571428571,
+      end: 0.5357142857142857,
+    });
   });
 });

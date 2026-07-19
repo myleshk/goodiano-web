@@ -170,26 +170,23 @@ class GoodianoApp {
       this.whiteKeyWidth = Math.min(portraitWidth, 50);
     }
 
-    // Update max scroll
     if (!this.renderer) return;
+    // Resize the keys before deriving any dimensions from their width. Safari
+    // otherwise retains the previous content width for one layout pass.
+    this.renderer.updateViewport(this.viewportWidth, this.keyboardHeight, this.whiteKeyWidth);
     const contentWidth = this.renderer.getContentWidth();
     this.maxScroll = Math.max(0, contentWidth - this.viewportWidth);
 
-    // Update renderer
-    this.renderer.updateViewport(this.viewportWidth, this.keyboardHeight, this.whiteKeyWidth);
+    // Keep the DOM scroll range in sync with the same width used above.
+    if (this.keyboardContent) this.keyboardContent.style.width = contentWidth + 'px';
 
-    // Update input
     if (this.input) {
       this.input.setMaxScroll(this.maxScroll);
+      this.scrollContainer.scrollLeft = this.input.scrollOffset;
     }
 
-    // Update mini-map
+    // Use the clamped scroll offset after the scroll bounds have been updated.
     this.renderer.updateMiniMap(this.input ? this.input.scrollOffset : 0);
-
-    // Ensure scroll container content width
-    if (this.keyboardContent) {
-      this.keyboardContent.style.width = contentWidth + 'px';
-    }
   }
 
   _screenToKeyboard(clientX: number, clientY: number): { x: number; y: number } | null {

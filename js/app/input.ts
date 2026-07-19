@@ -43,7 +43,13 @@ class InputController {
   hitTestFn: ((x: number, y: number) => PianoKey | null) | null = null;
   motionSamples: MotionSample[] = [];
   motionPermissionRequested = false;
-  private _handlers!: { down: (e: PointerEvent) => void; move: (e: PointerEvent) => void; up: (e: PointerEvent) => void; wheel: (e: WheelEvent) => void };
+  private _handlers!: {
+    down: (e: PointerEvent) => void;
+    move: (e: PointerEvent) => void;
+    up: (e: PointerEvent) => void;
+    wheel: (e: WheelEvent) => void;
+    scroll: () => void;
+  };
   private _onVisibilityChange!: () => void;
 
   constructor(container: HTMLElement, callbacks: InputCallbacks = {}) {
@@ -60,6 +66,7 @@ class InputController {
       move: e => this._onPointerMove(e),
       up: e => this._onPointerUp(e),
       wheel: e => this._onWheel(e),
+      scroll: () => this._onNativeScroll(),
     };
     el.addEventListener('pointerdown', this._handlers.down, { passive: false });
     el.addEventListener('pointermove', this._handlers.move, { passive: false });
@@ -67,6 +74,7 @@ class InputController {
     el.addEventListener('pointercancel', this._handlers.up);
     el.addEventListener('lostpointercapture', this._handlers.up);
     el.addEventListener('wheel', this._handlers.wheel, { passive: false });
+    el.addEventListener('scroll', this._handlers.scroll, { passive: true });
     el.addEventListener('gesturestart', e => e.preventDefault());
     el.addEventListener('gesturechange', e => e.preventDefault());
     el.addEventListener('gestureend', e => e.preventDefault());
@@ -183,6 +191,13 @@ class InputController {
     this.setScrollOffset(this.scrollOffset + (e.deltaX || e.deltaY));
   }
 
+  _onNativeScroll(): void {
+    const offset = Math.max(0, Math.min(this.maxScroll, this.container.scrollLeft));
+    if (offset === this.scrollOffset) return;
+    this.scrollOffset = offset;
+    this.onScroll(offset);
+  }
+
   _syncPressedKeys(): void {
     const next = new Set<string>();
     const keyObjects = new Map<string, InputKey>();
@@ -233,6 +248,7 @@ class InputController {
 
   destroy(): void {
     this.releaseAll();
+    this.container.removeEventListener('scroll', this._handlers.scroll);
     document.removeEventListener('visibilitychange', this._onVisibilityChange);
     window.removeEventListener('pagehide', this._onVisibilityChange);
   }

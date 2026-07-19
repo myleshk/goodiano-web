@@ -144,6 +144,36 @@ function getViewportRange(scrollOffset: number, whiteKeyWidth: number, viewportW
 }
 
 /**
+ * Map the scroll viewport into mini-map coordinates. The mini-map gives the
+ * partial A0/B0 and C8 ranges half an octave's visual width, so this must use
+ * the white-key positions rather than a percentage of keyboard pixels.
+ */
+function getMiniMapViewport(
+  layout: KeyboardLayout,
+  scrollOffset: number,
+  whiteKeyWidth: number,
+  viewportWidth: number,
+): { start: number; end: number } {
+  const count = layout.whiteKeys.length;
+  if (count === 0 || whiteKeyWidth <= 0) return { start: 0, end: 0 };
+
+  const xAtBoundary = (index: number): number => {
+    const clamped = Math.max(0, Math.min(count, index));
+    if (clamped === count) return 1;
+    const lower = Math.floor(clamped);
+    const fraction = clamped - lower;
+    const start = layout.miniMapKeyXs[lower]?.x ?? 0;
+    const next = lower + 1 < count ? (layout.miniMapKeyXs[lower + 1]?.x ?? 1) : 1;
+    return start + (next - start) * fraction;
+  };
+
+  const startKey = scrollOffset / whiteKeyWidth;
+  const endKey = (scrollOffset + viewportWidth) / whiteKeyWidth;
+  const start = xAtBoundary(startKey);
+  return { start, end: Math.max(start, xAtBoundary(endKey)) };
+}
+
+/**
  * Compute scroll offset to center a specific white key index.
  * @param {number} whiteKeyIndex - index in whiteKeys array
  * @param {number} whiteKeyWidth - current white key width
@@ -166,7 +196,7 @@ function findMiddleCIndex(layout: KeyboardLayout): number {
   return idx >= 0 ? idx : Math.floor(layout.whiteKeys.length / 2);
 }
 
-export { computeLayout, hitTest, getViewportRange, scrollToKey, findMiddleCIndex };
+export { computeLayout, hitTest, getViewportRange, getMiniMapViewport, scrollToKey, findMiddleCIndex };
 export type { KeyboardLayout, MiniMapKeyPosition, OctaveBlock };
 import type { PianoKey } from './model';
 

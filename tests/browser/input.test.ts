@@ -58,4 +58,14 @@ describe('pointer input', () => {
     expect(presses).toEqual([['C4', true], ['C4', false]]);
     input.destroy();
   });
+
+  it('synchronizes Safari native scrolling back to the controller', () => {
+    const { container, input, scrolls } = setup();
+    Object.defineProperty(container, 'scrollLeft', { value: 180, writable: true });
+    container.dispatchEvent(new Event('scroll'));
+
+    expect(input.scrollOffset).toBe(180);
+    expect(scrolls.at(-1)).toBe(180);
+    input.destroy();
+  });
 });

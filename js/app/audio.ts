@@ -7,6 +7,7 @@
 const MIDI_CHANNEL = 0;
 const DEFAULT_VELOCITY = 100;
 const MASTER_GAIN = 10; // Amplified to match iOS engine volume
+const RELEASE_SECONDS = 0.2;
 
 type AudioEngineState = 'loading' | 'awaitingGesture' | 'ready' | 'error';
 interface NoteRequest { keyId: string; midiNote: number; velocity: number }
@@ -33,6 +34,8 @@ class PianoAudioEngine {
   masterGain: GainNode | null = null;
   samples: Map<number, AudioBuffer> | null = null;
   zones: SoundFontZone[] = [];
+  /** Voices still sounding, including notes in their release envelope. */
+  voices = new Set<ActiveNote>();
   activeNotes = new Map<string, ActiveNote>();
   queuedNotes = new Map<string, NoteRequest>();
   heldNotes = new Map<string, NoteRequest>();
@@ -71,7 +74,7 @@ class PianoAudioEngine {
       // Safari can suspend a context while fingers are still down. Rebuild
       // those voices from the held-key snapshot after resuming.
       if (!wasRunning) {
-        for (const [keyId, active] of this.activeNotes) this._stopNote(keyId, active);
+        for (const active of [...this.voices]) this._stopVoice(active);
         for (const note of this.heldNotes.values()) this.queuedNotes.set(note.keyId, note);
         this._flushQueuedNotes();
       }
@@ -417,9 +420,6 @@ class PianoAudioEngine {
 
   _startNote({ keyId, midiNote, velocity = DEFAULT_VELOCITY }: NoteRequest): void {
     if (!this.ctx || !this.samples) return;
-    const existing = this.activeNotes.get(keyId);
-    if (existing) this._stopNote(keyId, existing);
-
     const clampedNote = Math.max(0, Math.min(127, midiNote));
     const zone = this._findZone(clampedNote);
     if (!zone) return;
@@ -444,8 +444,12 @@ class PianoAudioEngine {
     source.connect(gainNode);
     source.start(0);
 
-    // Store for noteOff
-    this.activeNotes.set(keyId, { source, gain: gainNode, midiNote: clampedNote });
+    const active = { source, gain: gainNode, midiNote: clampedNote };
+    // A fresh press replaces the held voice, but lets an earlier release of
+    // the same pitch finish its short release envelope.
+    this.activeNotes.set(keyId, active);
+    this.voices.add(active);
+    source.onended = () => this._finishVoice(keyId, active);
     this.queuedNotes.delete(keyId);
   }
 
@@ -455,26 +459,46 @@ class PianoAudioEngine {
   }
 
   /**
-   * Stop playing a note
+   * Release a held note with a short envelope. The source samples can last
+   * several seconds (and longer when pitched down), which makes their raw
+   * recorded tails overlap excessively during normal playing.
    * @param {string} keyId
    */
   noteOff(keyId: string): void {
     this.heldNotes.delete(keyId);
     this.queuedNotes.delete(keyId);
     const note = this.activeNotes.get(keyId);
-    if (!note) return;
-    this._stopNote(keyId, note);
+    this.activeNotes.delete(keyId);
+    if (!note || !this.ctx) return;
+
+    const now = this.ctx.currentTime;
+    const releaseEnd = now + RELEASE_SECONDS;
+    note.gain.gain.cancelScheduledValues(now);
+    note.gain.gain.setValueAtTime(note.gain.gain.value, now);
+    note.gain.gain.linearRampToValueAtTime(0, releaseEnd);
+    try {
+      note.source.stop(releaseEnd);
+    } catch (_) {
+      // The source may already have reached its natural end.
+    }
   }
 
-  _stopNote(keyId: string, note: ActiveNote): void {
+  _finishVoice(keyId: string, note: ActiveNote): void {
+    if (!this.voices.delete(note)) return;
+    if (this.activeNotes.get(keyId) === note) this.activeNotes.delete(keyId);
+    note.source.disconnect();
+    note.gain.disconnect();
+  }
+
+  _stopVoice(note: ActiveNote): void {
     try {
       note.source.stop(0);
     } catch (e) {
       // Already stopped — ignore
     }
+    this.voices.delete(note);
     note.source.disconnect();
     note.gain.disconnect();
-    this.activeNotes.delete(keyId);
   }
 
   /**
@@ -483,7 +507,8 @@ class PianoAudioEngine {
   allNotesOff(): void {
     this.heldNotes.clear();
     this.queuedNotes.clear();
-    for (const [keyId, note] of this.activeNotes) this._stopNote(keyId, note);
+    for (const note of [...this.voices]) this._stopVoice(note);
+    this.activeNotes.clear();
   }
 
   /**

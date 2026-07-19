@@ -4,6 +4,10 @@
  * Port of WhiteKeyView.swift + BlackKeyView.swift + KeyboardView body
  */
 
+import { getMiniMapViewport } from './keyboard';
+import type { KeyboardLayout } from './keyboard';
+import type { PianoKey } from './model';
+
 const OCTAVE_COLORS = [
   '#1a3a5c', // dark blue
   '#5c1a1a', // dark red
@@ -95,10 +99,6 @@ class KeyboardRenderer {
     el.style.backgroundColor = '#fff';
     el.style.border = '1px solid rgba(128,128,128,0.25)';
     el.style.borderTop = 'none';
-    el.style.display = 'flex';
-    el.style.alignItems = 'flex-end';
-    el.style.justifyContent = 'center';
-    el.style.paddingBottom = '4%';
     el.style.userSelect = 'none';
     el.style.webkitUserSelect = 'none';
     el.style.transition = 'transform 0.12s cubic-bezier(0.25, 0.1, 0.25, 1), background-color 0.08s ease';
@@ -110,6 +110,11 @@ class KeyboardRenderer {
     label.style.color = 'rgba(128,128,128,0.5)';
     label.style.fontFamily = 'system-ui, -apple-system, sans-serif';
     label.style.pointerEvents = 'none';
+    label.style.position = 'absolute';
+    label.style.left = '50%';
+    label.style.bottom = '10px';
+    label.style.transform = 'translateX(-50%)';
+    label.style.whiteSpace = 'nowrap';
 
     el.appendChild(label);
     return el;
@@ -260,14 +265,15 @@ class KeyboardRenderer {
   updateMiniMap(scrollOffset: number): void {
     if (!this._miniMapIndicator || !this.layout) return;
 
-    const totalWidth = this.layout.whiteKeys.length * this.whiteKeyWidth;
-    if (totalWidth <= 0) return;
+    const { start, end } = getMiniMapViewport(
+      this.layout,
+      scrollOffset,
+      this.whiteKeyWidth,
+      this.viewportWidth,
+    );
 
-    const startPct = (scrollOffset / totalWidth) * 100;
-    const viewPct = (this.viewportWidth / totalWidth) * 100;
-
-    this._miniMapIndicator.style.left = startPct + '%';
-    this._miniMapIndicator.style.width = Math.min(viewPct, 100 - startPct) + '%';
+    this._miniMapIndicator.style.left = `${start * 100}%`;
+    this._miniMapIndicator.style.width = `${(end - start) * 100}%`;
   }
 
   /**
@@ -290,5 +296,3 @@ class KeyboardRenderer {
 }
 
 export { KeyboardRenderer };
-import type { KeyboardLayout } from './keyboard';
-import type { PianoKey } from './model';
