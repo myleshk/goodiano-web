@@ -4,6 +4,26 @@
  * 88-key piano: A0 (MIDI 21) through C8 (MIDI 108)
  */
 
+interface PitchDefinition {
+  readonly name: string;
+  readonly semitoneOffset: number;
+  readonly isBlack: boolean;
+}
+
+interface PianoKey {
+  id: string;
+  name: string;
+  pitch: PitchDefinition;
+  octave: number;
+  isBlack: boolean;
+  midiNote: number;
+}
+
+interface KeyBoundary {
+  pitch: PitchDefinition;
+  octave: number;
+}
+
 const Pitch = Object.freeze({
   C:      { name: 'C',  semitoneOffset: 0,  isBlack: false },
   CSharp: { name: 'C#', semitoneOffset: 1,  isBlack: true  },
@@ -19,7 +39,7 @@ const Pitch = Object.freeze({
   B:      { name: 'B',  semitoneOffset: 11, isBlack: false },
 });
 
-const PITCHES_BY_SEMITONE = Object.values(Pitch).reduce((map, p) => {
+const PITCHES_BY_SEMITONE = Object.values(Pitch).reduce<Record<number, PitchDefinition>>((map, p) => {
   map[p.semitoneOffset] = p;
   return map;
 }, {});
@@ -30,7 +50,7 @@ const PITCHES_BY_SEMITONE = Object.values(Pitch).reduce((map, p) => {
  * @param {number} octave
  * @returns {object} PianoKeyModel
  */
-function createKey(pitch, octave) {
+function createKey(pitch: PitchDefinition, octave: number): PianoKey {
   const midiNote = (octave + 1) * 12 + pitch.semitoneOffset;
   const name = `${pitch.name}${octave}`;
   return {
@@ -49,12 +69,12 @@ function createKey(pitch, octave) {
  * @param {{pitch: object, octave: number}} to - ending key (inclusive)
  * @returns {object[]} Array of PianoKeyModel objects
  */
-function generatePianoKeys(from, to) {
+function generatePianoKeys(from: KeyBoundary, to: KeyBoundary): PianoKey[] {
   const startMIDI = (from.octave + 1) * 12 + from.pitch.semitoneOffset;
   const endMIDI = (to.octave + 1) * 12 + to.pitch.semitoneOffset;
   if (startMIDI > endMIDI) return [];
 
-  const keys = [];
+  const keys: PianoKey[] = [];
   for (let midi = startMIDI; midi <= endMIDI; midi++) {
     const octave = Math.floor(midi / 12) - 1;
     const semitone = ((midi % 12) + 12) % 12;
@@ -75,3 +95,4 @@ function generateFullPianoKeys() {
 }
 
 export { Pitch, PITCHES_BY_SEMITONE, createKey, generatePianoKeys, generateFullPianoKeys };
+export type { KeyBoundary, PianoKey, PitchDefinition };

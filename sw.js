@@ -1,12 +1,14 @@
 /* Goodiano offline shell. All paths are resolved from the installed scope so
  * the app works when hosted below a domain subpath. */
-const CACHE_NAME = 'goodiano-v2';
-const SHELL = [
+const CACHE_NAME = 'goodiano-v3';
+const GENERATED_ASSETS = [];
+const DEV_SHELL = [
   './', './index.html', './css/main.css', './manifest.json',
-  './js/app/model.js', './js/app/audio.js', './js/app/keyboard.js',
-  './js/app/input.js', './js/app/render.js', './js/app/app.js',
+  './js/app/model.ts', './js/app/audio.ts', './js/app/keyboard.ts',
+  './js/app/input.ts', './js/app/render.ts', './js/app/app.ts',
   './assets/icons/icon-192.png', './assets/icons/icon-512.png', './assets/icons/icon-180.png',
 ];
+const SHELL = GENERATED_ASSETS.length ? GENERATED_ASSETS : DEV_SHELL;
 const toURL = path => new URL(path, self.registration.scope).href;
 
 self.addEventListener('install', event => {

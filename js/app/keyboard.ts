@@ -8,18 +8,18 @@
  * @param {object[]} keys - array of PianoKeyModel from model.js
  * @returns {object} layout data
  */
-function computeLayout(keys) {
+function computeLayout(keys: PianoKey[]): KeyboardLayout {
   const whiteKeys = keys.filter(k => !k.isBlack);
   const blackKeys = keys.filter(k => k.isBlack);
 
   // Map white key ID -> index in whiteKeys array
-  const whiteIndexMap = new Map();
+  const whiteIndexMap = new Map<string, number>();
   whiteKeys.forEach((k, i) => whiteIndexMap.set(k.id, i));
 
   // For each black key, find the index of the preceding white key. The black
   // key is centered on the boundary after that white key (the iOS layout uses
   // the index directly, not index + 0.5).
-  const blackKeyWhiteIndex = {};
+  const blackKeyWhiteIndex: Record<string, number> = {};
   for (const bk of blackKeys) {
     // A black key sits between the white key below and above.
     // The white key below is the same note letter without sharp (e.g., C for C#)
@@ -30,8 +30,8 @@ function computeLayout(keys) {
 
   // Group white keys into octave blocks (for mini-map)
   // Octave N contains white keys from C(N) to B(N)
-  const octaveBlocks = [];
-  let currentOctave = null;
+  const octaveBlocks: OctaveBlock[] = [];
+  let currentOctave: number | null = null;
   let currentStart = 0;
 
   whiteKeys.forEach((wk, i) => {
@@ -41,8 +41,8 @@ function computeLayout(keys) {
           octave: currentOctave,
           startIndex: currentStart,
           endIndex: i - 1,
-        count: i - currentStart,
-        widthMultiplier: i - currentStart < 7 ? 0.5 : 1,
+          count: i - currentStart,
+          widthMultiplier: i - currentStart < 7 ? 0.5 : 1,
         });
       }
       currentOctave = wk.octave;
@@ -63,7 +63,7 @@ function computeLayout(keys) {
   // Mini-map X positions (normalized 0-1)
   const totalUnits = octaveBlocks.reduce((sum, block) => sum + block.widthMultiplier, 0);
   let accumulated = 0;
-  const miniMapKeyXs = [];
+  const miniMapKeyXs: MiniMapKeyPosition[] = [];
   for (const block of octaveBlocks) {
     const blockWidth = totalUnits ? block.widthMultiplier / totalUnits : 0;
     const count = Math.max(block.count, 1);
@@ -100,7 +100,7 @@ function computeLayout(keys) {
  * @param {object} layout - result of computeLayout()
  * @returns {object|null} PianoKeyModel or null
  */
-function hitTest(x, y, whiteKeyWidth, keyboardHeight, layout) {
+function hitTest(x: number, y: number, whiteKeyWidth: number, keyboardHeight: number, layout: KeyboardLayout): PianoKey | null {
   const { whiteKeys, blackKeys, blackKeyWhiteIndex } = layout;
 
   const blackWidth = whiteKeyWidth * 0.65;
@@ -137,7 +137,7 @@ function hitTest(x, y, whiteKeyWidth, keyboardHeight, layout) {
  * @param {number} totalWhiteKeys - total count of white keys
  * @returns {{ start: number, end: number }}
  */
-function getViewportRange(scrollOffset, whiteKeyWidth, viewportWidth, totalWhiteKeys) {
+function getViewportRange(scrollOffset: number, whiteKeyWidth: number, viewportWidth: number, totalWhiteKeys: number): { start: number; end: number } {
   const start = Math.max(0, Math.floor(scrollOffset / whiteKeyWidth));
   const end = Math.min(totalWhiteKeys - 1, Math.ceil((scrollOffset + viewportWidth) / whiteKeyWidth));
   return { start, end };
@@ -151,7 +151,7 @@ function getViewportRange(scrollOffset, whiteKeyWidth, viewportWidth, totalWhite
  * @param {number} maxScroll - maximum scroll offset
  * @returns {number} target scroll offset
  */
-function scrollToKey(whiteKeyIndex, whiteKeyWidth, viewportWidth, maxScroll) {
+function scrollToKey(whiteKeyIndex: number, whiteKeyWidth: number, viewportWidth: number, maxScroll: number): number {
   const keyCenterX = whiteKeyIndex * whiteKeyWidth + whiteKeyWidth / 2;
   return Math.max(0, Math.min(maxScroll, keyCenterX - viewportWidth / 2));
 }
@@ -161,9 +161,37 @@ function scrollToKey(whiteKeyIndex, whiteKeyWidth, viewportWidth, maxScroll) {
  * @param {object} layout
  * @returns {number} white key index
  */
-function findMiddleCIndex(layout) {
+function findMiddleCIndex(layout: KeyboardLayout): number {
   const idx = layout.whiteKeys.findIndex(k => k.id === 'C4');
   return idx >= 0 ? idx : Math.floor(layout.whiteKeys.length / 2);
 }
 
 export { computeLayout, hitTest, getViewportRange, scrollToKey, findMiddleCIndex };
+export type { KeyboardLayout, MiniMapKeyPosition, OctaveBlock };
+import type { PianoKey } from './model';
+
+interface OctaveBlock {
+  octave: number;
+  startIndex: number;
+  endIndex: number;
+  count: number;
+  widthMultiplier: number;
+}
+
+interface MiniMapKeyPosition {
+  keyId: string;
+  x: number;
+}
+
+interface KeyboardLayout {
+  keys: PianoKey[];
+  whiteKeys: PianoKey[];
+  blackKeys: PianoKey[];
+  whiteKeyCount: number;
+  blackKeyWhiteIndex: Record<string, number>;
+  octaveBlocks: OctaveBlock[];
+  miniMapKeyXs: MiniMapKeyPosition[];
+  whiteIndexMap: Map<string, number>;
+  midiLow: number;
+  midiHigh: number;
+}

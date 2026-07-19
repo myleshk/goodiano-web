@@ -4,37 +4,49 @@
  * Port of ContentView.swift + KeyboardView.swift body logic.
  */
 
-import { generateFullPianoKeys } from './model.js';
-import { PianoAudioEngine } from './audio.js';
-import { computeLayout, hitTest, findMiddleCIndex, scrollToKey } from './keyboard.js';
-import { InputController } from './input.js';
-import { KeyboardRenderer } from './render.js';
+import { generateFullPianoKeys } from './model';
+import { PianoAudioEngine } from './audio';
+import { computeLayout, hitTest, findMiddleCIndex, scrollToKey } from './keyboard';
+import { InputController } from './input';
+import type { InputKey } from './input';
+import { KeyboardRenderer } from './render';
+import type { KeyboardLayout } from './keyboard';
+import type { PianoKey } from './model';
 
 class GoodianoApp {
+  keys: PianoKey[];
+  layout: KeyboardLayout;
+  audio: PianoAudioEngine;
+  renderer: KeyboardRenderer | null = null;
+  input: InputController | null = null;
+  viewportWidth = 0;
+  keyboardHeight = 0;
+  whiteKeyWidth = 50;
+  maxScroll = 0;
+  keyboardArea!: HTMLElement;
+  scrollContainer!: HTMLElement;
+  keyboardContent!: HTMLElement;
+  miniMapEl!: HTMLElement;
+  loadingOverlay: HTMLElement | null = null;
+  private _resizeObserver: ResizeObserver | null = null;
+
   constructor() {
     this.keys = generateFullPianoKeys();
     this.layout = computeLayout(this.keys);
     this.audio = new PianoAudioEngine();
-    this.renderer = null;
-    this.input = null;
-
-    // Viewport state
-    this.viewportWidth = 0;
-    this.keyboardHeight = 0;
-    this.whiteKeyWidth = 50;
-    this.maxScroll = 0;
   }
 
   async init() {
     // Cache DOM elements
-    this.keyboardArea = document.querySelector('.keyboard-area');
-    this.scrollContainer = document.querySelector('.keyboard-scroll');
-    this.keyboardContent = document.querySelector('.keyboard-content');
-    this.miniMapEl = document.querySelector('.minimap-container');
+    this.keyboardArea = this._requiredElement('.keyboard-area');
+    this.scrollContainer = this._requiredElement('.keyboard-scroll');
+    this.keyboardContent = this._requiredElement('.keyboard-content');
+    this.miniMapEl = this._requiredElement('.minimap-container');
     this.loadingOverlay = document.querySelector('.loading-overlay');
-    this.loadingOverlay?.querySelector('.loading-retry')?.addEventListener('click', () => {
-      this.loadingOverlay.classList.remove('recoverable-error');
-      const text = this.loadingOverlay.querySelector('.loading-text');
+    const loadingOverlay = this.loadingOverlay;
+    loadingOverlay?.querySelector('.loading-retry')?.addEventListener('click', () => {
+      loadingOverlay.classList.remove('recoverable-error');
+      const text = loadingOverlay.querySelector('.loading-text');
       if (text) text.textContent = 'Retrying audio load…';
       this._loadAudio().then(() => {
         this._hideLoading();
@@ -65,7 +77,7 @@ class GoodianoApp {
 
     // Init input
     this.input = new InputController(this.scrollContainer, {
-      onKeyPress: (key, pressed, velocity) => this._handleKeyPress(key, pressed, velocity),
+      onKeyPress: (key: InputKey, pressed: boolean, velocity?: number) => this._handleKeyPress(key, pressed, velocity),
       onScroll: (offset) => this._handleScroll(offset),
     });
 
@@ -100,6 +112,12 @@ class GoodianoApp {
     });
   }
 
+  private _requiredElement(selector: string): HTMLElement {
+    const element = document.querySelector<HTMLElement>(selector);
+    if (!element) throw new Error(`Missing required element: ${selector}`);
+    return element;
+  }
+
   async _loadAudio() {
     try {
       await this.audio.loadSoundFont('assets/yahama_U1.sf2');
@@ -125,6 +143,7 @@ class GoodianoApp {
   }
 
   _scrollToC4() {
+    if (!this.input || !this.renderer) return;
     const c4Idx = findMiddleCIndex(this.layout);
     const target = scrollToKey(c4Idx, this.whiteKeyWidth, this.viewportWidth, this.maxScroll);
     this.input.setScrollOffset(target);
@@ -152,6 +171,7 @@ class GoodianoApp {
     }
 
     // Update max scroll
+    if (!this.renderer) return;
     const contentWidth = this.renderer.getContentWidth();
     this.maxScroll = Math.max(0, contentWidth - this.viewportWidth);
 
@@ -172,7 +192,7 @@ class GoodianoApp {
     }
   }
 
-  _screenToKeyboard(clientX, clientY) {
+  _screenToKeyboard(clientX: number, clientY: number): { x: number; y: number } | null {
     if (!this.keyboardContent) return null;
     const contentRect = this.keyboardContent.getBoundingClientRect();
     return {
@@ -181,7 +201,8 @@ class GoodianoApp {
     };
   }
 
-  _handleKeyPress(key, pressed, velocity) {
+  _handleKeyPress(key: InputKey, pressed: boolean, velocity?: number): void {
+    if (!this.renderer) return;
     if (pressed) {
       this.audio.ensureRunning().catch(() => {});
       this.audio.noteOn(key.id, this._getMidiNote(key.id), velocity);
@@ -191,12 +212,13 @@ class GoodianoApp {
     this.renderer.setPressed(key.id, pressed);
   }
 
-  _handleScroll(offset) {
+  _handleScroll(offset: number): void {
+    if (!this.renderer) return;
     this.scrollContainer.scrollLeft = offset;
     this.renderer.updateMiniMap(offset);
   }
 
-  _getMidiNote(keyId) {
+  _getMidiNote(keyId: string): number {
     const key = this.layout.keys.find(k => k.id === keyId);
     return key ? key.midiNote : 60;
   }

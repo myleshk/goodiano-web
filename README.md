@@ -14,7 +14,8 @@ A virtual piano keyboard Progressive Web App (PWA) with realistic **Yamaha U1** 
 
 ## Tech Stack
 
-- Vanilla JavaScript (ES modules), no build step required.
+- Vanilla TypeScript modules built with Vite (no UI framework).
+- Vitest unit tests and real-browser pointer tests through Playwright/WebKit.
 - Web Audio API for sample-accurate polyphonic playback.
 - Service Worker + Web App Manifest for installable PWA / offline use.
 - Pure CSS dark theme (no framework).
@@ -29,13 +30,14 @@ web/
 ├── css/
 │   └── main.css            # Styles (dark theme, responsive)
 ├── js/app/
-│   ├── app.js              # Orchestrator: wires model → input → layout → render → audio
-│   ├── model.js            # Piano data model (Pitch enum, 88-key generation)
-│   ├── audio.js            # SF2 parser + Web Audio playback engine
-│   ├── keyboard.js         # Layout computation & hit-testing
-│   ├── input.js            # Pointer / keyboard input controller
-│   └── render.js           # Keyboard + mini-map rendering
-└── assets/
+│   ├── app.ts              # Orchestrator: wires model → input → layout → render → audio
+│   ├── model.ts            # Piano data model (Pitch enum, 88-key generation)
+│   ├── audio.ts            # SF2 parser + Web Audio playback engine
+│   ├── keyboard.ts         # Layout computation & hit-testing
+│   ├── input.ts            # Pointer / keyboard input controller
+│   └── render.ts           # Keyboard + mini-map rendering
+├── tests/                  # Unit and browser interaction tests
+└── public/assets/
     ├── icons/              # PWA icons (180 / 192 / 512 px)
     └── yahama_U1.sf2       # Yamaha U1 SoundFont (audio samples)
 ```
@@ -44,18 +46,21 @@ web/
 
 Goodiano is a static site, but it **must be served over HTTP(S)** (ES modules and the service worker will not work from `file://`).
 
-Using Python (no install required):
+Install dependencies and start the Vite development server:
 
 ```bash
-cd web
-python3 -m http.server 8000
-# Open http://localhost:8000
+npm install
+npm run dev
 ```
 
-Or using Node:
+Production and verification commands:
 
 ```bash
-npx serve .
+npm run typecheck
+npm test
+npm run test:browser
+npm run build
+npm run preview
 ```
 
 > **Note:** On iOS, audio only starts after the first tap/gesture (browser autoplay policy). The app handles this automatically — just tap a key to begin.
@@ -74,7 +79,7 @@ Any modern browser with Web Audio API and Service Worker support: Safari (iOS 14
 
 1. Fork / clone the repository.
 2. Serve locally (see Getting Started) and make changes.
-3. Keep the no-build, vanilla-JS approach unless adding a clear benefit.
+3. Keep the imperative, framework-free piano surface unless a UI framework adds a clear product benefit.
 4. Commit and open a pull request.
 
 ## License

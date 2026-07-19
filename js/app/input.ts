@@ -2,22 +2,54 @@
  * Pointer input for the piano. Each pointer owns its current key; the
  * rendered/audio pressed set is derived from every active pointer.
  */
+import type { PianoKey } from './model';
+
+interface InputKey extends Partial<PianoKey> { id: string; velocity?: number }
+interface Point { x: number; y: number }
+interface MotionSample { time: number; magnitude: number }
+interface PointerState {
+  pointerId: number;
+  startX: number;
+  startY: number;
+  lastX: number;
+  lastY: number;
+  startOffset: number;
+  mode: 'note-or-scroll' | 'note' | 'scroll';
+  key: PianoKey | null;
+  keyId: string | null;
+  motionStart: number;
+  velocity?: number;
+}
+interface InputCallbacks {
+  onKeyPress?: (key: InputKey, pressed: boolean, velocity?: number) => void;
+  onScroll?: (offset: number) => void;
+}
+interface DeviceMotionEventConstructorWithPermission {
+  requestPermission?: () => Promise<'granted' | 'denied'>;
+}
+
 class InputController {
-  constructor(container, callbacks = {}) {
+  container: HTMLElement;
+  onKeyPress: NonNullable<InputCallbacks['onKeyPress']>;
+  onScroll: NonNullable<InputCallbacks['onScroll']>;
+  activePointers = new Map<number, PointerState>();
+  pressedKeys = new Set<string>();
+  scrollOffset = 0;
+  maxScroll = 0;
+  scrollThreshold = 8;
+  primaryPointerId: number | null = null;
+  scrollDisabled = false;
+  screenToKeyboardCoord: ((clientX: number, clientY: number) => Point | null) | null = null;
+  hitTestFn: ((x: number, y: number) => PianoKey | null) | null = null;
+  motionSamples: MotionSample[] = [];
+  motionPermissionRequested = false;
+  private _handlers!: { down: (e: PointerEvent) => void; move: (e: PointerEvent) => void; up: (e: PointerEvent) => void; wheel: (e: WheelEvent) => void };
+  private _onVisibilityChange!: () => void;
+
+  constructor(container: HTMLElement, callbacks: InputCallbacks = {}) {
     this.container = container;
     this.onKeyPress = callbacks.onKeyPress || (() => {});
     this.onScroll = callbacks.onScroll || (() => {});
-    this.activePointers = new Map();
-    this.pressedKeys = new Set();
-    this.scrollOffset = 0;
-    this.maxScroll = 0;
-    this.scrollThreshold = 8;
-    this.primaryPointerId = null;
-    this.scrollDisabled = false;
-    this.screenToKeyboardCoord = null;
-    this.hitTestFn = null;
-    this.motionSamples = [];
-    this.motionPermissionRequested = false;
     this._bindEvents();
   }
 
@@ -54,28 +86,28 @@ class InputController {
     }, { passive: true });
   }
 
-  setConverters(screenToKeyboardCoord, hitTestFn) {
+  setConverters(screenToKeyboardCoord: (clientX: number, clientY: number) => Point | null, hitTestFn: (x: number, y: number) => PianoKey | null): void {
     this.screenToKeyboardCoord = screenToKeyboardCoord;
     this.hitTestFn = hitTestFn;
   }
 
-  setMaxScroll(max) {
+  setMaxScroll(max: number): void {
     this.maxScroll = Math.max(0, max);
     this.setScrollOffset(this.scrollOffset);
   }
 
-  setScrollOffset(offset) {
+  setScrollOffset(offset: number): void {
     this.scrollOffset = Math.max(0, Math.min(this.maxScroll, offset));
     this.onScroll(this.scrollOffset);
   }
 
-  _findKeyAtPoint(clientX, clientY) {
+  _findKeyAtPoint(clientX: number, clientY: number): PianoKey | null {
     if (!this.screenToKeyboardCoord || !this.hitTestFn) return null;
     const point = this.screenToKeyboardCoord(clientX, clientY);
     return point ? this.hitTestFn(point.x, point.y) : null;
   }
 
-  _onPointerDown(e) {
+  _onPointerDown(e: PointerEvent): void {
     e.preventDefault();
     try { this.container.setPointerCapture(e.pointerId); } catch (_) { /* Safari */ }
     this.container.focus();
@@ -88,10 +120,10 @@ class InputController {
     } else {
       // Chords always win over scrolling. Existing pointers remain tracked.
       this.scrollDisabled = true;
-      const primary = this.activePointers.get(this.primaryPointerId);
+      const primary = this.primaryPointerId === null ? undefined : this.activePointers.get(this.primaryPointerId);
       if (primary) primary.mode = 'note';
     }
-    const pointer = {
+    const pointer: PointerState = {
       pointerId: e.pointerId,
       startX: e.clientX,
       startY: e.clientY,
@@ -107,7 +139,7 @@ class InputController {
     this._syncPressedKeys(); // first finger starts immediately
   }
 
-  _onPointerMove(e) {
+  _onPointerMove(e: PointerEvent): void {
     const pointer = this.activePointers.get(e.pointerId);
     if (!pointer) return;
     e.preventDefault();
@@ -134,7 +166,7 @@ class InputController {
     this._syncPressedKeys();
   }
 
-  _onPointerUp(e) {
+  _onPointerUp(e: PointerEvent): void {
     const pointer = this.activePointers.get(e.pointerId);
     if (!pointer) return;
     try { this.container.releasePointerCapture(e.pointerId); } catch (_) { /* Safari */ }
@@ -146,14 +178,14 @@ class InputController {
     }
   }
 
-  _onWheel(e) {
+  _onWheel(e: WheelEvent): void {
     e.preventDefault();
     this.setScrollOffset(this.scrollOffset + (e.deltaX || e.deltaY));
   }
 
-  _syncPressedKeys() {
-    const next = new Set();
-    const keyObjects = new Map();
+  _syncPressedKeys(): void {
+    const next = new Set<string>();
+    const keyObjects = new Map<string, InputKey>();
     for (const pointer of this.activePointers.values()) {
       if (pointer.mode !== 'scroll' && pointer.keyId) {
         next.add(pointer.keyId);
@@ -175,11 +207,12 @@ class InputController {
   _requestMotionPermission() {
     if (this.motionPermissionRequested) return;
     this.motionPermissionRequested = true;
-    const permission = window.DeviceMotionEvent?.requestPermission;
-    if (typeof permission === 'function') permission.call(window.DeviceMotionEvent).catch(() => {});
+    const constructor = window.DeviceMotionEvent as typeof DeviceMotionEvent & DeviceMotionEventConstructorWithPermission;
+    const permission = constructor?.requestPermission;
+    if (typeof permission === 'function') permission.call(constructor).catch(() => {});
   }
 
-  _estimateVelocity(startTime) {
+  _estimateVelocity(startTime: number): number | undefined {
     const samples = this.motionSamples.filter(sample => sample.time >= startTime);
     if (!samples.length) return undefined;
     const baseline = this.motionSamples
@@ -190,7 +223,7 @@ class InputController {
     return Math.round(35 + Math.min(delta / 4.5, 1) * 92);
   }
 
-  releaseAll() {
+  releaseAll(): void {
     this.activePointers.clear();
     for (const id of this.pressedKeys) this.onKeyPress({ id }, false);
     this.pressedKeys.clear();
@@ -198,7 +231,7 @@ class InputController {
     this.scrollDisabled = false;
   }
 
-  destroy() {
+  destroy(): void {
     this.releaseAll();
     document.removeEventListener('visibilitychange', this._onVisibilityChange);
     window.removeEventListener('pagehide', this._onVisibilityChange);
@@ -206,3 +239,4 @@ class InputController {
 }
 
 export { InputController };
+export type { InputCallbacks, InputKey };

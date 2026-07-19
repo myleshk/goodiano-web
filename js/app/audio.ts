@@ -8,26 +8,47 @@ const MIDI_CHANNEL = 0;
 const DEFAULT_VELOCITY = 100;
 const MASTER_GAIN = 10; // Amplified to match iOS engine volume
 
+type AudioEngineState = 'loading' | 'awaitingGesture' | 'ready' | 'error';
+interface NoteRequest { keyId: string; midiNote: number; velocity: number }
+interface ActiveNote { source: AudioBufferSourceNode; gain: GainNode; midiNote: number }
+interface SoundFontZone {
+  loKey: number; hiKey: number; sampleIndex: number; rootKey: number;
+  sampleRate: number; sampleStart: number; sampleEnd: number;
+}
+interface SampleHeader {
+  name: string; start: number; end: number; startLoop: number; endLoop: number;
+  sampleRate: number; originalPitch: number; pitchCorrection: number;
+}
+interface KeyRange { lo: number; hi: number }
+interface InstrumentZone { keyRange: KeyRange; sampleID: number; rootKey: number | null }
+interface DraftZone { keyRange: KeyRange | null; sampleID: number | null; rootKey: number | null }
+interface RawChunk { base: number; size: number }
+interface InstrumentBag { name: string; bagIdx: number }
+interface BagEntry { genIdx: number; modIdx: number }
+interface GeneratorEntry { oper: number; amount: number }
+interface WebKitAudioWindow extends Window { webkitAudioContext?: typeof AudioContext }
+
 class PianoAudioEngine {
+  ctx: AudioContext | null = null;
+  masterGain: GainNode | null = null;
+  samples: Map<number, AudioBuffer> | null = null;
+  zones: SoundFontZone[] = [];
+  activeNotes = new Map<string, ActiveNote>();
+  queuedNotes = new Map<string, NoteRequest>();
+  heldNotes = new Map<string, NoteRequest>();
+  loaded = false;
+  loading = false;
+  state: AudioEngineState = 'loading';
+
   constructor() {
-    this.ctx = null;
-    this.masterGain = null;
-    this.samples = null;      // Map: sampleIndex -> AudioBuffer
-    this.zones = [];          // [{ loKey, hiKey, sampleIndex, rootKey, sampleRate }]
-    this.activeNotes = new Map(); // keyId -> { source, gain, midiNote }
-    this.queuedNotes = new Map(); // held keys waiting for SF2/context readiness
-    this.heldNotes = new Map();   // keys currently held by the input layer
-    this.loaded = false;
-    this.loading = false;
-    this.state = 'loading';
   }
 
   /**
    * Initialize AudioContext (must be called from user gesture on iOS)
    */
-  async init() {
+  async init(): Promise<AudioContext> {
     if (this.ctx) return this.ctx;
-    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    const AudioContextClass = window.AudioContext || (window as WebKitAudioWindow).webkitAudioContext;
     if (!AudioContextClass) {
       this.state = 'error';
       throw new Error('Web Audio is unavailable in this browser');
@@ -40,12 +61,12 @@ class PianoAudioEngine {
     return this.ctx;
   }
 
-  async ensureRunning() {
-    await this.init();
-    if (this.ctx.state === 'closed') throw new Error('AudioContext is closed');
-    const wasRunning = this.ctx.state === 'running';
-    if (this.ctx.state !== 'running') await this.ctx.resume();
-    if (this.ctx.state === 'running') {
+  async ensureRunning(): Promise<boolean> {
+    const ctx = await this.init();
+    if (ctx.state === 'closed') throw new Error('AudioContext is closed');
+    const wasRunning = ctx.state === 'running';
+    if (ctx.state !== 'running') await ctx.resume();
+    if (ctx.state === 'running') {
       this.state = this.loaded ? 'ready' : 'loading';
       // Safari can suspend a context while fingers are still down. Rebuild
       // those voices from the held-key snapshot after resuming.
@@ -57,7 +78,7 @@ class PianoAudioEngine {
     } else {
       this.state = 'awaitingGesture';
     }
-    return this.ctx.state === 'running';
+    return ctx.state === 'running';
   }
 
   /**
@@ -65,18 +86,18 @@ class PianoAudioEngine {
    * @param {string} url - path to .sf2 file
    * @returns {Promise<void>}
    */
-  async loadSoundFont(url) {
+  async loadSoundFont(url: string): Promise<void> {
     if (this.loaded || this.loading) return;
     this.loading = true;
     try {
-      await this.init();
+      const ctx = await this.init();
       const response = await fetch(new URL(url, document.baseURI));
       if (!response.ok) throw new Error(`SoundFont request failed (${response.status})`);
       const buffer = await response.arrayBuffer();
       if (buffer.byteLength < 12) throw new Error('SoundFont response is empty or truncated');
       this._parseSF2(new DataView(buffer));
       this.loaded = true;
-      this.state = this.ctx.state === 'running' ? 'ready' : 'awaitingGesture';
+      this.state = ctx.state === 'running' ? 'ready' : 'awaitingGesture';
       this._flushQueuedNotes();
     } catch (error) {
       this.state = 'error';
@@ -90,7 +111,7 @@ class PianoAudioEngine {
    * Parse SF2 binary format to extract sample data and zone mappings.
    * SF2 is a RIFF container; we need sdta (sample data) and pdta (instrument defs).
    */
-  _parseSF2(data) {
+  _parseSF2(data: DataView): void {
     const textDecoder = new TextDecoder('ascii');
 
     // --- Read RIFF structure into a chunk map ---
@@ -129,9 +150,9 @@ class PianoAudioEngine {
     const sfbk = readFourCC();
     if (sfbk !== 'sfbk') throw new Error('Not a SoundFont file');
 
-    let sampleData = null;
-    let sampleHeaders = [];
-    let instrumentZones = [];
+    let sampleData: Int16Array<ArrayBufferLike> | null = null;
+    const sampleHeaders: SampleHeader[] = [];
+    const instrumentZones: InstrumentZone[] = [];
 
     // Walk top-level chunks
     while (offset < data.byteLength) {
@@ -156,7 +177,7 @@ class PianoAudioEngine {
           // Parse pdta: collect all sub-chunks into raw arrays first,
           // then build zones by walking instrument → bag → generator chains.
           const pdtaStart = offset - 4; // rewind past 'pdta' FOURCC for raw access
-          const pdtaRaw = { shdr: null, inst: null, ibag: null, igen: null };
+          const pdtaRaw: Record<string, RawChunk | null> = { shdr: null, inst: null, ibag: null, igen: null };
 
           while (offset < listEnd) {
             const subID = readFourCC();
@@ -186,7 +207,7 @@ class PianoAudioEngine {
           }
 
           // --- Parse inst (instrument headers): 22 bytes each ---
-          const instBags = []; // [{ name, bagIdx }]
+          const instBags: InstrumentBag[] = [];
           if (pdtaRaw.inst) {
             const { base, size } = pdtaRaw.inst;
             const count = Math.floor(size / 22);
@@ -201,7 +222,7 @@ class PianoAudioEngine {
           }
 
           // --- Parse ibag (instrument bags): 4 bytes each ---
-          const bagEntries = []; // [{ genIdx, modIdx }]
+          const bagEntries: BagEntry[] = [];
           if (pdtaRaw.ibag) {
             const { base, size } = pdtaRaw.ibag;
             const count = Math.floor(size / 4);
@@ -215,7 +236,7 @@ class PianoAudioEngine {
           }
 
           // --- Parse igen (instrument generators): 4 bytes each ---
-          const genEntries = []; // [{ oper, amount }]
+          const genEntries: GeneratorEntry[] = [];
           if (pdtaRaw.igen) {
             const { base, size } = pdtaRaw.igen;
             const count = Math.floor(size / 4);
@@ -234,13 +255,13 @@ class PianoAudioEngine {
             const nextBagIdx = (iIdx + 1 < instBags.length) ? instBags[iIdx + 1].bagIdx : bagEntries.length;
             if (inst.bagIdx >= nextBagIdx) continue; // skip empty/terminal instruments
 
-            let globalGen = {}; // accumulated global generators
+            const globalGen: Record<number, number> = {}; // accumulated global generators
 
             for (let bIdx = inst.bagIdx; bIdx < nextBagIdx; bIdx++) {
               const bag = bagEntries[bIdx];
               if (!bag || bag.genIdx >= genEntries.length) continue;
 
-              const zone = { keyRange: null, sampleID: null, rootKey: null };
+              const zone: DraftZone = { keyRange: null, sampleID: null, rootKey: null };
               const genEnd = (bIdx + 1 < nextBagIdx) ? bagEntries[bIdx + 1].genIdx : genEntries.length;
               let isGlobal = true;
 
@@ -278,7 +299,7 @@ class PianoAudioEngine {
               }
 
               if (zone.keyRange && zone.sampleID != null) {
-                instrumentZones.push(zone);
+                instrumentZones.push({ keyRange: zone.keyRange, sampleID: zone.sampleID, rootKey: zone.rootKey });
               }
             }
           }
@@ -294,7 +315,7 @@ class PianoAudioEngine {
 
     // Filter zones that have valid keyRange and sampleID
     this.zones = instrumentZones
-      .filter(z => z.keyRange && z.sampleID != null && z.sampleID < sampleHeaders.length)
+      .filter(z => z.sampleID < sampleHeaders.length)
       .map(z => ({
         loKey: z.keyRange.lo,
         hiKey: z.keyRange.hi,
@@ -331,7 +352,7 @@ class PianoAudioEngine {
   /**
    * Create AudioBuffer for each sample from raw 16-bit PCM data
    */
-  _createBuffers(sampleData, sampleHeaders) {
+  _createBuffers(sampleData: Int16Array<ArrayBufferLike>, sampleHeaders: SampleHeader[]): void {
     const uniqueSampleIndices = new Set(this.zones.map(z => z.sampleIndex));
     this.samples = new Map();
 
@@ -342,6 +363,7 @@ class PianoAudioEngine {
       const length = sh.end - sh.start;
       if (length <= 0) continue;
 
+      if (!this.ctx) throw new Error('AudioContext is not initialized');
       const buffer = this.ctx.createBuffer(1, length, sh.sampleRate);
       const channel = buffer.getChannelData(0);
 
@@ -357,7 +379,7 @@ class PianoAudioEngine {
   /**
    * Find the SF2 zone matching a MIDI note
    */
-  _findZone(midiNote) {
+  _findZone(midiNote: number): SoundFontZone | undefined {
     // Exact match first
     for (const zone of this.zones) {
       if (midiNote >= zone.loKey && midiNote <= zone.hiKey) {
@@ -385,7 +407,7 @@ class PianoAudioEngine {
    * @param {string} keyId - unique key identifier (e.g., "C4")
    * @param {number} midiNote - MIDI note number (0-127)
    */
-  noteOn(keyId, midiNote, velocity = DEFAULT_VELOCITY) {
+  noteOn(keyId: string, midiNote: number, velocity = DEFAULT_VELOCITY): void {
     const note = { keyId, midiNote, velocity };
     this.heldNotes.set(keyId, note);
     this.queuedNotes.set(keyId, note);
@@ -393,7 +415,7 @@ class PianoAudioEngine {
     this._startNote(note);
   }
 
-  _startNote({ keyId, midiNote, velocity = DEFAULT_VELOCITY }) {
+  _startNote({ keyId, midiNote, velocity = DEFAULT_VELOCITY }: NoteRequest): void {
     if (!this.ctx || !this.samples) return;
     const existing = this.activeNotes.get(keyId);
     if (existing) this._stopNote(keyId, existing);
@@ -416,6 +438,7 @@ class PianoAudioEngine {
     // Per-note gain for future velocity support
     const gainNode = this.ctx.createGain();
     gainNode.gain.value = Math.max(0, Math.min(127, velocity)) / 127;
+    if (!this.masterGain) return;
     gainNode.connect(this.masterGain);
 
     source.connect(gainNode);
@@ -426,7 +449,7 @@ class PianoAudioEngine {
     this.queuedNotes.delete(keyId);
   }
 
-  _flushQueuedNotes() {
+  _flushQueuedNotes(): void {
     if (!this.ctx || this.ctx.state !== 'running' || !this.samples) return;
     for (const note of this.queuedNotes.values()) this._startNote(note);
   }
@@ -435,7 +458,7 @@ class PianoAudioEngine {
    * Stop playing a note
    * @param {string} keyId
    */
-  noteOff(keyId) {
+  noteOff(keyId: string): void {
     this.heldNotes.delete(keyId);
     this.queuedNotes.delete(keyId);
     const note = this.activeNotes.get(keyId);
@@ -443,7 +466,7 @@ class PianoAudioEngine {
     this._stopNote(keyId, note);
   }
 
-  _stopNote(keyId, note) {
+  _stopNote(keyId: string, note: ActiveNote): void {
     try {
       note.source.stop(0);
     } catch (e) {
@@ -457,7 +480,7 @@ class PianoAudioEngine {
   /**
    * Force stop all active notes (for cleanup)
    */
-  allNotesOff() {
+  allNotesOff(): void {
     this.heldNotes.clear();
     this.queuedNotes.clear();
     for (const [keyId, note] of this.activeNotes) this._stopNote(keyId, note);
@@ -466,9 +489,10 @@ class PianoAudioEngine {
   /**
    * Check if engine is ready to play
    */
-  isReady() {
-    return this.state === 'ready' && this.loaded && this.ctx && this.ctx.state !== 'closed';
+  isReady(): boolean {
+    return this.state === 'ready' && this.loaded && this.ctx !== null && this.ctx.state !== 'closed';
   }
 }
 
 export { PianoAudioEngine };
+export type { AudioEngineState };

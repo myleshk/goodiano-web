@@ -13,26 +13,31 @@ const OCTAVE_COLORS = [
 ];
 
 class KeyboardRenderer {
+  keyboardEl: HTMLElement;
+  miniMapEl: HTMLElement;
+  scrollContainer: HTMLElement;
+  layout: KeyboardLayout | null = null;
+  keyElements = new Map<string, HTMLElement>();
+  whiteKeyWidth = 50;
+  keyboardHeight = 300;
+  viewportWidth = 0;
+  private _miniMapIndicator: HTMLDivElement | null = null;
+
   /**
    * @param {HTMLElement} keyboardEl - container for the key elements
    * @param {HTMLElement} miniMapEl - container for the mini-map
    * @param {HTMLElement} scrollContainer - the scrollable wrapper
    */
-  constructor(keyboardEl, miniMapEl, scrollContainer) {
+  constructor(keyboardEl: HTMLElement, miniMapEl: HTMLElement, scrollContainer: HTMLElement) {
     this.keyboardEl = keyboardEl;
     this.miniMapEl = miniMapEl;
     this.scrollContainer = scrollContainer;
-    this.layout = null;
-    this.keyElements = new Map(); // keyId -> HTMLElement
-    this.whiteKeyWidth = 50;
-    this.keyboardHeight = 300;
-    this.viewportWidth = 0;
   }
 
   /**
    * Build the full keyboard from layout data
    */
-  build(layout) {
+  build(layout: KeyboardLayout): void {
     this.layout = layout;
     this.keyboardEl.innerHTML = '';
     this.keyElements.clear();
@@ -78,11 +83,11 @@ class KeyboardRenderer {
     this._updateSizes();
   }
 
-  _createWhiteKey(key) {
+  _createWhiteKey(key: PianoKey): HTMLDivElement {
     const el = document.createElement('div');
     el.className = 'key-white';
     el.dataset.key = key.id;
-    el.dataset.midi = key.midiNote;
+    el.dataset.midi = String(key.midiNote);
     el.style.flex = '0 0 auto';
     el.style.position = 'relative';
     el.style.cursor = 'pointer';
@@ -110,11 +115,11 @@ class KeyboardRenderer {
     return el;
   }
 
-  _createBlackKey(key, layout) {
+  _createBlackKey(key: PianoKey, _layout: KeyboardLayout): HTMLDivElement {
     const el = document.createElement('div');
     el.className = 'key-black';
     el.dataset.key = key.id;
-    el.dataset.midi = key.midiNote;
+    el.dataset.midi = String(key.midiNote);
     el.style.position = 'absolute';
     el.style.backgroundColor = '#000';
     el.style.borderRadius = '0 0 6px 6px';
@@ -132,7 +137,7 @@ class KeyboardRenderer {
   /**
    * Call after resize, orientation change, or scroll
    */
-  _updateSizes() {
+  _updateSizes(): void {
     if (!this.layout) return;
 
     const ww = this.whiteKeyWidth;
@@ -165,7 +170,7 @@ class KeyboardRenderer {
   /**
    * Set pressed visual state on a key
    */
-  setPressed(keyId, pressed) {
+  setPressed(keyId: string, pressed: boolean): void {
     const el = this.keyElements.get(keyId);
     if (!el) return;
 
@@ -191,7 +196,7 @@ class KeyboardRenderer {
   /**
    * Build the mini-map with octave blocks
    */
-  buildMiniMap() {
+  buildMiniMap(): void {
     if (!this.layout) return;
     this.miniMapEl.innerHTML = '';
 
@@ -205,7 +210,7 @@ class KeyboardRenderer {
     map.style.borderRadius = '0';
     map.style.overflow = 'hidden';
 
-    const { octaveBlocks, whiteKeyCount, whiteKeys } = this.layout;
+    const { octaveBlocks } = this.layout;
 
     const totalUnits = octaveBlocks.reduce((sum, block) => sum + (block.widthMultiplier || 1), 0);
     for (let i = 0; i < octaveBlocks.length; i++) {
@@ -252,7 +257,7 @@ class KeyboardRenderer {
   /**
    * Update mini-map viewport indicator position
    */
-  updateMiniMap(scrollOffset) {
+  updateMiniMap(scrollOffset: number): void {
     if (!this._miniMapIndicator || !this.layout) return;
 
     const totalWidth = this.layout.whiteKeys.length * this.whiteKeyWidth;
@@ -268,7 +273,7 @@ class KeyboardRenderer {
   /**
    * Update sizes when viewport changes
    */
-  updateViewport(viewportWidth, keyboardHeight, whiteKeyWidth) {
+  updateViewport(viewportWidth: number, keyboardHeight: number, whiteKeyWidth: number): void {
     this.viewportWidth = viewportWidth;
     this.keyboardHeight = keyboardHeight;
     this.whiteKeyWidth = whiteKeyWidth;
@@ -278,10 +283,12 @@ class KeyboardRenderer {
   /**
    * Set keyboard content width (for scroll calculation)
    */
-  getContentWidth() {
+  getContentWidth(): number {
     if (!this.layout) return 0;
     return this.layout.whiteKeys.length * this.whiteKeyWidth;
   }
 }
 
 export { KeyboardRenderer };
+import type { KeyboardLayout } from './keyboard';
+import type { PianoKey } from './model';
