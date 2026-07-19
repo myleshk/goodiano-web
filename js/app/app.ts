@@ -6,7 +6,7 @@
 
 import { generateFullPianoKeys } from './model';
 import { PianoAudioEngine } from './audio';
-import { computeLayout, hitTest, findMiddleCIndex, scrollToKey } from './keyboard';
+import { computeLayout, hitTest, findMiddleCIndex, getWhiteKeyWidth, scrollToKey } from './keyboard';
 import { InputController } from './input';
 import type { InputKey } from './input';
 import { KeyboardRenderer } from './render';
@@ -157,18 +157,7 @@ class GoodianoApp {
     this.viewportWidth = rect.width;
     this.keyboardHeight = rect.height;
 
-    // Calculate white key width based on orientation
-    // Landscape (wider than tall): fixed 50px per key
-    // Portrait: fit at least 10 white keys
-    const minVisibleKeys = 10;
-    const portraitWidth = this.viewportWidth / minVisibleKeys;
-    const landscapeWidth = 50;
-
-    if (this.viewportWidth > this.keyboardHeight * 1.2) {
-      this.whiteKeyWidth = landscapeWidth;
-    } else {
-      this.whiteKeyWidth = Math.min(portraitWidth, 50);
-    }
+    this.whiteKeyWidth = getWhiteKeyWidth(this.viewportWidth, this.keyboardHeight);
 
     if (!this.renderer) return;
     // Resize the keys before deriving any dimensions from their width. Safari

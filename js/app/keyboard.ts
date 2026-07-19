@@ -174,6 +174,18 @@ function getMiniMapViewport(
 }
 
 /**
+ * Choose a white-key width for the current keyboard viewport. Portrait keeps
+ * ten keys visible, while landscape matches the iOS keyboard's 55-point
+ * logical white-key width. CSS caps landscape height to a 7:1 key ratio.
+ */
+function getWhiteKeyWidth(viewportWidth: number, keyboardHeight: number): number {
+  if (viewportWidth > keyboardHeight * 1.2) {
+    return 55;
+  }
+  return Math.min(viewportWidth / 10, 50);
+}
+
+/**
  * Compute scroll offset to center a specific white key index.
  * @param {number} whiteKeyIndex - index in whiteKeys array
  * @param {number} whiteKeyWidth - current white key width
@@ -196,7 +208,7 @@ function findMiddleCIndex(layout: KeyboardLayout): number {
   return idx >= 0 ? idx : Math.floor(layout.whiteKeys.length / 2);
 }
 
-export { computeLayout, hitTest, getViewportRange, getMiniMapViewport, scrollToKey, findMiddleCIndex };
+export { computeLayout, hitTest, getViewportRange, getMiniMapViewport, getWhiteKeyWidth, scrollToKey, findMiddleCIndex };
 export type { KeyboardLayout, MiniMapKeyPosition, OctaveBlock };
 import type { PianoKey } from './model';
 

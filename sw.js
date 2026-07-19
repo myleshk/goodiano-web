@@ -1,6 +1,6 @@
 /* Goodiano offline shell. All paths are resolved from the installed scope so
  * the app works when hosted below a domain subpath. */
-const CACHE_NAME = 'goodiano-v5';
+const CACHE_NAME = 'goodiano-v0.2.0';
 const GENERATED_ASSETS = [];
 const DEV_SHELL = [
   './', './index.html', './css/main.css', './manifest.json',

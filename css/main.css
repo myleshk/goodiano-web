@@ -164,15 +164,22 @@ html, body {
   .app {
     flex-direction: column;
   }
+  .minimap-container {
+    margin-top: auto;
+  }
   .keyboard-area {
-    flex: 0 0 88dvh;
+    /* 55px iOS-style keys capped at a 7:1 height-to-width ratio. */
+    flex: 0 0 min(88dvh, 385px);
+  }
+  .app-brand {
+    margin-bottom: auto;
   }
 }
 
 /* --- Responsive: Very wide (desktop) --- */
 @media (min-width: 1024px) and (min-aspect-ratio: 16/10) {
   .keyboard-area {
-    flex: 0 0 65dvh;
+    flex: 0 0 min(65dvh, 385px);
   }
 }
 

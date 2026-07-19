@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { computeLayout, findMiddleCIndex, getMiniMapViewport, getViewportRange, hitTest, scrollToKey } from '../../js/app/keyboard';
+import { computeLayout, findMiddleCIndex, getMiniMapViewport, getViewportRange, getWhiteKeyWidth, hitTest, scrollToKey } from '../../js/app/keyboard';
 import { generateFullPianoKeys } from '../../js/app/model';
 
 describe('88-key keyboard model and layout', () => {
@@ -40,5 +40,11 @@ describe('88-key keyboard model and layout', () => {
       start: 0.3571428571428571,
       end: 0.5357142857142857,
     });
+  });
+
+  it('uses the iOS 55-point logical key width in landscape', () => {
+    expect(getWhiteKeyWidth(1024, 385)).toBe(55);
+    expect(385 / getWhiteKeyWidth(1024, 385)).toBe(7);
+    expect(getWhiteKeyWidth(844, 343)).toBe(55);
   });
 });
