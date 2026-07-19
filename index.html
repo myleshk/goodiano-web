@@ -17,7 +17,7 @@
   <link rel="apple-touch-icon" href="assets/icons/icon-180.png">
 
   <!-- Keep a versioned URL so an older service worker cannot serve stale CSS. -->
-  <link rel="stylesheet" href="css/main.css?v=20260720-000102">
+  <link rel="stylesheet" href="css/main.css?v=0-1-0">
 </head>
 <body>
   <div class="app">
@@ -57,7 +57,7 @@
     <button class="settings-action motion-permission-button" type="button">Enable Velocity</button>
     <button class="settings-action velocity-debug-toggle" type="button">Show Debug</button>
     <button class="settings-action app-reload-button" type="button">Reload App</button>
-    <div class="settings-version">Goodiano · debug-20260720-000102</div>
+    <div class="settings-version">Goodiano · v0.1.0</div>
   </section>
 
   <aside class="velocity-debug" hidden aria-live="polite">
@@ -68,12 +68,12 @@
     <div class="velocity-debug-raw">pressure -- &nbsp;·&nbsp; motion Δ --</div>
   </aside>
 
-  <script type="module" src="./js/app/app.ts?v=20260720-000102"></script>
+  <script type="module" src="./js/app/app.ts?v=0-1-0"></script>
 
   <script>
     // Register service worker
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('./sw.js?debug=20260720-000102')
+      navigator.serviceWorker.register('./sw.js?v=0-1-0')
         .then(registration => registration.update())
         .catch(() => {});
     }
