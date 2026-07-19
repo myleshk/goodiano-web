@@ -13,6 +13,7 @@ import { KeyboardRenderer } from './render';
 import type { KeyboardLayout } from './keyboard';
 import type { PianoKey } from './model';
 
+
 class GoodianoApp {
   keys: PianoKey[];
   layout: KeyboardLayout;
@@ -29,6 +30,7 @@ class GoodianoApp {
   miniMapEl!: HTMLElement;
   loadingOverlay: HTMLElement | null = null;
   velocityDebug: HTMLElement | null = null;
+  settingsPanel: HTMLElement | null = null;
   private _resizeObserver: ResizeObserver | null = null;
 
   constructor() {
@@ -45,6 +47,10 @@ class GoodianoApp {
     this.miniMapEl = this._requiredElement('.minimap-container');
     this.loadingOverlay = document.querySelector('.loading-overlay');
     this.velocityDebug = document.querySelector('.velocity-debug');
+    this.settingsPanel = document.querySelector('.settings-panel');
+    document.querySelector<HTMLButtonElement>('.settings-toggle')?.addEventListener('click', () => {
+      if (this.settingsPanel) this.settingsPanel.hidden = !this.settingsPanel.hidden;
+    });
     const loadingOverlay = this.loadingOverlay;
     loadingOverlay?.querySelector('.loading-retry')?.addEventListener('click', () => {
       loadingOverlay.classList.remove('recoverable-error');
@@ -83,9 +89,31 @@ class GoodianoApp {
       onScroll: (offset) => this._handleScroll(offset),
       onMotionPermissionChange: state => this._updateMotionPermissionDebug(state),
     });
+    this._updateMotionPermissionDebug(this.input.motionPermissionState);
 
-    this.velocityDebug?.querySelector<HTMLButtonElement>('.motion-permission-button')
-      ?.addEventListener('click', () => this.input?.requestMotionPermission());
+    this.settingsPanel?.querySelector<HTMLButtonElement>('.motion-permission-button')
+      ?.addEventListener('click', async () => {
+        const input = this.input;
+        if (!input) return;
+        if (input.motionEnabled) {
+          input.setMotionEnabled(false);
+          return;
+        }
+        const state = await input.requestMotionPermission();
+        if (state === 'granted') input.setMotionEnabled(true);
+      });
+    this.settingsPanel?.querySelector<HTMLButtonElement>('.velocity-debug-toggle')
+      ?.addEventListener('click', event => {
+        const button = event.currentTarget as HTMLButtonElement;
+        if (!this.velocityDebug) return;
+        const visible = this.velocityDebug.hidden;
+        this.velocityDebug.hidden = !visible;
+        document.querySelectorAll<HTMLElement>('.motion-permission-status')
+          .forEach(status => { status.hidden = !visible; });
+        button.textContent = visible ? 'Hide Debug' : 'Show Debug';
+      });
+    this.settingsPanel?.querySelector<HTMLButtonElement>('.app-reload-button')
+      ?.addEventListener('click', () => this.reloadApp());
 
     this.input.setConverters(
       (cx, cy) => this._screenToKeyboard(cx, cy),
@@ -126,13 +154,15 @@ class GoodianoApp {
 
   async _loadAudio() {
     try {
-      await this.audio.loadSoundFont('assets/yahama_U1.sf2');
+      await this.audio.loadSoundFont('assets/yahama_U1.sf2', progress => this._updateLoadingProgress(progress));
     } catch (err) {
       console.error('Failed to load SoundFont:', err);
       // Show error state
       if (this.loadingOverlay) {
         const text = this.loadingOverlay.querySelector('.loading-text');
-        if (text) text.textContent = 'Audio failed to load. Tap to retry.';
+        if (text) text.textContent = err instanceof DOMException && err.name === 'AbortError'
+          ? 'Audio load timed out. Tap to retry.'
+          : 'Audio failed to load. Tap to retry.';
         this.loadingOverlay.classList.add('recoverable-error');
       }
       throw err;
@@ -146,6 +176,17 @@ class GoodianoApp {
         if (this.loadingOverlay) this.loadingOverlay.style.display = 'none';
       }, 500);
     }
+  }
+
+  _updateLoadingProgress(progress: number): void {
+    const value = Math.round(Math.max(0, Math.min(1, progress)) * 100);
+    const indicator = this.loadingOverlay?.querySelector<HTMLElement>('.loading-progress');
+    const label = this.loadingOverlay?.querySelector<HTMLElement>('.loading-progress-label');
+    indicator?.style.setProperty('--progress', `${value}%`);
+    indicator?.setAttribute('aria-valuenow', String(value));
+    if (label) label.textContent = `${value}%`;
+    const text = this.loadingOverlay?.querySelector<HTMLElement>('.loading-text');
+    if (text && value >= 100) text.textContent = 'Preparing audio…';
   }
 
   _scrollToC4() {
@@ -222,15 +263,18 @@ class GoodianoApp {
   }
 
   _updateMotionPermissionDebug(state: MotionPermissionState): void {
-    if (!this.velocityDebug) return;
-    const status = this.velocityDebug.querySelector<HTMLElement>('.motion-permission-status');
-    const button = this.velocityDebug.querySelector<HTMLButtonElement>('.motion-permission-button');
-    if (status) status.textContent = `motion permission: ${state}`;
-    if (button) {
-      button.textContent = state === 'requesting' ? 'Requesting…' : 'Enable Motion';
-      button.disabled = state === 'requesting';
-      button.hidden = state === 'granted' || state === 'unavailable';
-    }
+    document.querySelectorAll<HTMLElement>('.motion-permission-status')
+      .forEach(status => { status.textContent = `motion permission: ${state}`; });
+    const button = this.settingsPanel?.querySelector<HTMLButtonElement>('.motion-permission-button');
+    if (button) button.textContent = this.input?.motionEnabled ? 'Disable Velocity' : 'Enable Velocity';
+  }
+
+  reloadApp(): void {
+    // The service worker serves the SoundFont from its cache, so this reload
+    // refreshes app files without downloading the audio asset again.
+    const url = new URL(window.location.href);
+    url.searchParams.set('reload', String(Date.now()));
+    window.location.replace(url.href);
   }
 
   _handleScroll(offset: number): void {

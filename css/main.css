@@ -61,6 +61,34 @@ html, body {
   margin-bottom: 16px;
 }
 
+.loading-progress {
+  --progress: 0%;
+  position: relative;
+  display: grid;
+  width: 64px;
+  height: 64px;
+  margin-bottom: 16px;
+  place-items: center;
+  border-radius: 50%;
+  background: conic-gradient(#fff var(--progress), rgba(255,255,255,0.14) var(--progress));
+}
+
+.loading-progress::before {
+  content: '';
+  position: absolute;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: #000;
+}
+
+.loading-progress-label {
+  position: relative;
+  color: rgba(255,255,255,0.85);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
 .loading-text {
   color: rgba(255,255,255,0.5);
   font-size: 13px;
@@ -77,6 +105,7 @@ html, body {
   background: #fff;
 }
 .loading-overlay.recoverable-error .loading-spinner { display: none; }
+.loading-overlay.recoverable-error .loading-progress { display: none; }
 .loading-overlay.recoverable-error .loading-retry { display: block; }
 
 @keyframes spin {
@@ -94,8 +123,8 @@ html, body {
 /* --- Touch velocity diagnostics --- */
 .velocity-debug {
   position: fixed;
-  top: calc(env(safe-area-inset-top, 0px) + 8px);
-  right: 8px;
+  top: calc(env(safe-area-inset-top, 0px) + 58px);
+  left: calc(env(safe-area-inset-left, 0px) + 8px);
   width: 210px;
   padding: 9px 10px;
   border: 1px solid rgba(255,255,255,0.22);
@@ -112,6 +141,14 @@ html, body {
 .velocity-debug-value {
   font-size: 12px;
   font-weight: 700;
+}
+
+.velocity-debug-title {
+  margin-bottom: 4px;
+  color: rgba(255,255,255,0.55);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
 }
 
 .velocity-debug-track {
@@ -139,20 +176,86 @@ html, body {
   margin-top: 5px;
 }
 
-.motion-permission-button {
-  width: 100%;
-  margin-top: 6px;
-  padding: 5px 8px;
-  border: 1px solid rgba(255,255,255,0.25);
-  border-radius: 5px;
-  color: #fff;
-  background: rgba(255,255,255,0.12);
-  font: inherit;
+/* --- Settings --- */
+.settings-toggle {
+  position: fixed;
+  top: calc(env(safe-area-inset-top, 0px) + 5px);
+  right: calc(env(safe-area-inset-right, 0px) + 5px);
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  appearance: none;
+  border: 0;
+  color: rgba(255,255,255,0.9);
+  background: transparent;
+  box-shadow: none !important;
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+  z-index: 1100;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
 
-.motion-permission-button:disabled {
-  opacity: 0.5;
+.settings-toggle:focus,
+.settings-toggle:active {
+  outline: none;
+  border: 0;
+  background: transparent;
+  box-shadow: none !important;
 }
+
+.settings-panel {
+  position: fixed;
+  top: calc(env(safe-area-inset-top, 0px) + 40px);
+  right: calc(env(safe-area-inset-right, 0px) + 20px);
+  width: min(280px, calc(100vw - 20px));
+  padding: 14px;
+  border: 1px solid rgba(255,255,255,0.25);
+  border-radius: 12px;
+  color: rgba(255,255,255,0.9);
+  background: rgba(12,12,12,0.95);
+  box-shadow: 0 8px 28px rgba(0,0,0,0.45);
+  z-index: 1110;
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+}
+
+.settings-help {
+  margin: 12px 0 8px;
+  color: rgba(255,255,255,0.62);
+  font-size: 12px;
+}
+
+.settings-panel .motion-permission-status {
+  margin: 0 0 8px;
+  font: 11px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.settings-action {
+  display: block;
+  width: 100%;
+  margin-top: 7px;
+  padding: 7px 8px;
+  appearance: none;
+  border: 1px solid rgba(255,255,255,0.2);
+  border-radius: 5px;
+  color: rgba(255,255,255,0.85);
+  background: rgba(255,255,255,0.07);
+  font-size: 13px;
+  line-height: 1.2;
+  font: inherit;
+  text-align: center;
+  cursor: pointer;
+}
+
+.settings-version {
+  margin-top: 10px;
+  color: rgba(255,255,255,0.35);
+  font-size: 9px;
+  text-align: right;
+}
+
 
 /* --- Keyboard Area --- */
 .keyboard-area {

@@ -1,6 +1,6 @@
 /* Goodiano offline shell. All paths are resolved from the installed scope so
  * the app works when hosted below a domain subpath. */
-const CACHE_NAME = 'goodiano-debug-20260719-224839';
+const CACHE_NAME = 'goodiano-debug-20260720-000102';
 const GENERATED_ASSETS = [];
 const DEV_SHELL = [
   './', './index.html', './css/main.css', './manifest.json',
@@ -33,6 +33,25 @@ self.addEventListener('fetch', event => {
   if (event.request.method !== 'GET') return;
   const requestURL = new URL(event.request.url);
   const isSoundFont = requestURL.pathname.endsWith('.sf2');
+
+  // Always check the network for navigations so a deployed update is not
+  // hidden forever behind the previous cache; retain the cached shell offline.
+  if (event.request.mode === 'navigate') {
+    event.respondWith((async () => {
+      try {
+        const response = await fetch(event.request);
+        if (response.ok) {
+          const cache = await caches.open(CACHE_NAME);
+          await cache.put(toURL('./index.html'), response.clone());
+        }
+        return response;
+      } catch (_) {
+        return caches.match(toURL('./index.html'));
+      }
+    })());
+    return;
+  }
+
   event.respondWith((async () => {
     const cached = await caches.match(event.request);
     if (cached) return cached;

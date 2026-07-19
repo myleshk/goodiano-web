@@ -5,7 +5,7 @@
 import type { PianoKey } from './model';
 
 type VelocitySource = 'pressure' | 'motion' | 'default';
-type MotionPermissionState = 'unknown' | 'requesting' | 'granted' | 'denied' | 'unavailable';
+type MotionPermissionState = 'disabled' | 'unknown' | 'requesting' | 'granted' | 'denied' | 'unavailable';
 // Calibrate the accelerometer impulse to the observed motion-delta range.
 const MOTION_FULL_SCALE = 1.4;
 interface InputKey extends Partial<PianoKey> {
@@ -58,7 +58,8 @@ class InputController {
   hitTestFn: ((x: number, y: number) => PianoKey | null) | null = null;
   motionSamples: MotionSample[] = [];
   motionPermissionRequested = false;
-  motionPermissionState: MotionPermissionState = 'unknown';
+  motionEnabled = false;
+  motionPermissionState: MotionPermissionState = 'disabled';
   private _handlers!: {
     down: (e: PointerEvent) => void;
     move: (e: PointerEvent) => void;
@@ -102,6 +103,7 @@ class InputController {
     window.addEventListener('pagehide', this._onVisibilityChange);
     window.addEventListener('orientationchange', () => this.releaseAll());
     window.addEventListener('devicemotion', e => {
+      if (!this.motionEnabled) return;
       const a = e.accelerationIncludingGravity;
       if (!a) return;
       const magnitude = Math.hypot(a.x || 0, a.y || 0, a.z || 0);
@@ -136,7 +138,6 @@ class InputController {
     e.preventDefault();
     try { this.container.setPointerCapture(e.pointerId); } catch (_) { /* Safari */ }
     this.container.focus();
-    this.requestMotionPermission().catch(() => {});
     const key = this._findKeyAtPoint(e.clientX, e.clientY);
     const isFirst = this.activePointers.size === 0;
     if (isFirst) {
@@ -259,6 +260,13 @@ class InputController {
     } catch (_) {
       return this._setMotionPermissionState('denied');
     }
+  }
+
+  setMotionEnabled(enabled: boolean): void {
+    this.motionEnabled = enabled;
+    this.motionSamples = [];
+    if (!enabled) this._setMotionPermissionState('disabled');
+    else this._setMotionPermissionState(this.motionPermissionState === 'granted' ? 'granted' : 'unknown');
   }
 
   _setMotionPermissionState(state: MotionPermissionState): MotionPermissionState {

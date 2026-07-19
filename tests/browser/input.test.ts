@@ -88,6 +88,7 @@ describe('pointer input', () => {
 
   it('applies a recent motion impulse to the initial note', () => {
     const { container, input, velocities } = setup();
+    input.setMotionEnabled(true);
     const now = performance.now();
     input.motionSamples = [
       { time: now - 150, magnitude: 1 },

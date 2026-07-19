@@ -10,8 +10,10 @@ const DEFAULT_VELOCITY = 100;
 // a 10x boost clipped soft and loud strikes to nearly the same output level.
 const MASTER_GAIN = 1;
 const RELEASE_SECONDS = 0.2;
+const AUDIO_FETCH_TIMEOUT_MS = 30_000;
 
 type AudioEngineState = 'loading' | 'awaitingGesture' | 'ready' | 'error';
+type LoadProgressCallback = (progress: number) => void;
 interface NoteRequest { keyId: string; midiNote: number; velocity: number }
 interface ActiveNote { source: AudioBufferSourceNode; gain: GainNode; midiNote: number }
 interface SoundFontZone {
@@ -91,14 +93,49 @@ class PianoAudioEngine {
    * @param {string} url - path to .sf2 file
    * @returns {Promise<void>}
    */
-  async loadSoundFont(url: string): Promise<void> {
+  async loadSoundFont(url: string, onProgress?: LoadProgressCallback): Promise<void> {
     if (this.loaded || this.loading) return;
     this.loading = true;
     try {
       const ctx = await this.init();
-      const response = await fetch(new URL(url, document.baseURI));
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), AUDIO_FETCH_TIMEOUT_MS);
+      let response: Response;
+      try {
+        response = await fetch(new URL(url, document.baseURI), { signal: controller.signal });
+      } finally {
+        clearTimeout(timeout);
+      }
       if (!response.ok) throw new Error(`SoundFont request failed (${response.status})`);
-      const buffer = await response.arrayBuffer();
+      const contentLength = Number(response.headers?.get('content-length')) || 0;
+      // Cache-served responses may omit Content-Length. There is no honest
+      // byte percentage in that case; mark download complete before parsing so
+      // the UI does not appear frozen at 0% during buffer restoration.
+      if (!contentLength) onProgress?.(1);
+      let buffer: ArrayBuffer;
+      if (response.body && typeof response.body.getReader === 'function') {
+        const reader = response.body.getReader();
+        const chunks: Uint8Array[] = [];
+        let received = 0;
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (!value) continue;
+          chunks.push(value);
+          received += value.byteLength;
+          if (contentLength) onProgress?.(Math.min(received / contentLength, 1));
+        }
+        const bytes = new Uint8Array(received);
+        let offset = 0;
+        for (const chunk of chunks) {
+          bytes.set(chunk, offset);
+          offset += chunk.byteLength;
+        }
+        buffer = bytes.buffer;
+      } else {
+        buffer = await response.arrayBuffer();
+      }
+      onProgress?.(1);
       if (buffer.byteLength < 12) throw new Error('SoundFont response is empty or truncated');
       this._parseSF2(new DataView(buffer));
       this.loaded = true;
