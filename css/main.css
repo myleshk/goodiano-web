@@ -147,8 +147,15 @@ html, body {
   .app {
     flex-direction: column;
   }
+  /* Keep the mini-map and keyboard together as a vertically centered group. */
+  .minimap-container {
+    margin-top: auto;
+  }
   .keyboard-area {
     flex: 0 0 42dvh;
+  }
+  .app-brand {
+    margin-bottom: auto;
   }
 }
 
