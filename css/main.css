@@ -227,6 +227,49 @@ html, body {
   font-size: 12px;
 }
 
+.sensitivity-control label {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.sensitivity-input-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.velocity-sensitivity {
+  flex: 1;
+  min-width: 0;
+  accent-color: #fff;
+  cursor: pointer;
+}
+
+.velocity-sensitivity:focus-visible {
+  outline: 2px solid #7db8ff;
+  outline-offset: 3px;
+}
+
+.velocity-sensitivity-output {
+  width: 3ch;
+  color: rgba(255,255,255,0.9);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.sensitivity-description,
+.motion-permission-feedback {
+  margin-top: 6px;
+  color: rgba(255,255,255,0.62);
+  font-size: 11px;
+}
+
+.motion-permission-feedback {
+  margin-bottom: 8px;
+}
+
 .settings-panel .motion-permission-status {
   margin: 0 0 8px;
   font: 11px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace;

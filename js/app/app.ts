@@ -9,7 +9,8 @@ import { DEFAULT_VELOCITY, PianoAudioEngine } from './audio';
 import { YAMAHA_U1_ZONES } from './sample-zones';
 import { computeLayout, hitTest, findMiddleCIndex, getWhiteKeyWidth, scrollToKey } from './keyboard';
 import { InputController } from './input';
-import type { InputKey, MotionPermissionState } from './input';
+import type { InputKey, MotionPermissionState, VelocityInputMode } from './input';
+import { loadSensitivity, saveSensitivity } from './velocity-settings';
 import { KeyboardRenderer } from './render';
 import type { KeyboardLayout } from './keyboard';
 import type { PianoKey } from './model';
@@ -89,20 +90,12 @@ class GoodianoApp {
       onKeyPress: (key: InputKey, pressed: boolean, velocity?: number) => this._handleKeyPress(key, pressed, velocity),
       onScroll: (offset) => this._handleScroll(offset),
       onMotionPermissionChange: state => this._updateMotionPermissionDebug(state),
+      onVelocityInputModeChange: mode => this._updateVelocityInputMode(mode),
     });
+    this.input.setSensitivity('motion', loadSensitivity('motion'));
+    this.input.setSensitivity('pressure', loadSensitivity('pressure'));
+    this._setupSensitivityControl();
     this._updateMotionPermissionDebug(this.input.motionPermissionState);
-
-    this.settingsPanel?.querySelector<HTMLButtonElement>('.motion-permission-button')
-      ?.addEventListener('click', async () => {
-        const input = this.input;
-        if (!input) return;
-        if (input.motionEnabled) {
-          input.setMotionEnabled(false);
-          return;
-        }
-        const state = await input.requestMotionPermission();
-        if (state === 'granted') input.setMotionEnabled(true);
-      });
     this.settingsPanel?.querySelector<HTMLButtonElement>('.velocity-debug-toggle')
       ?.addEventListener('click', event => {
         const button = event.currentTarget as HTMLButtonElement;
@@ -110,7 +103,7 @@ class GoodianoApp {
         const visible = this.velocityDebug.hidden;
         this.velocityDebug.hidden = !visible;
         document.querySelectorAll<HTMLElement>('.motion-permission-status')
-          .forEach(status => { status.hidden = !visible; });
+          .forEach(status => { status.hidden = !visible || this.input?.velocityInputMode === 'pressure'; });
         button.textContent = visible ? 'Hide Debug' : 'Show Debug';
       });
     this.settingsPanel?.querySelector<HTMLButtonElement>('.app-reload-button')
@@ -270,8 +263,60 @@ class GoodianoApp {
   _updateMotionPermissionDebug(state: MotionPermissionState): void {
     document.querySelectorAll<HTMLElement>('.motion-permission-status')
       .forEach(status => { status.textContent = `motion permission: ${state}`; });
-    const button = this.settingsPanel?.querySelector<HTMLButtonElement>('.motion-permission-button');
-    if (button) button.textContent = this.input?.motionEnabled ? 'Disable Velocity' : 'Enable Velocity';
+    const feedback = this.settingsPanel?.querySelector<HTMLElement>('.motion-permission-feedback');
+    if (!feedback || this.input?.velocityInputMode === 'pressure') return;
+    const messages: Partial<Record<MotionPermissionState, string>> = {
+      requesting: 'Requesting motion permission…',
+      denied: 'Motion permission was denied.',
+      unavailable: 'Motion input is unavailable on this device.',
+    };
+    feedback.textContent = messages[state] ?? '';
+    feedback.hidden = !messages[state];
+  }
+
+  private _setupSensitivityControl(): void {
+    const slider = this.settingsPanel?.querySelector<HTMLInputElement>('.velocity-sensitivity');
+    if (!slider || !this.input) return;
+    const activateMotion = () => { void this._activateMotionSensitivity(); };
+    slider.addEventListener('pointerdown', activateMotion, { once: true });
+    slider.addEventListener('keydown', activateMotion, { once: true });
+    slider.addEventListener('input', () => {
+      const mode = this.input?.velocityInputMode ?? 'motion';
+      const value = saveSensitivity(mode, Number(slider.value));
+      this.input?.setSensitivity(mode, value);
+      const output = this.settingsPanel?.querySelector<HTMLOutputElement>('.velocity-sensitivity-output');
+      if (output) output.value = String(value);
+    });
+    this._updateVelocityInputMode('motion');
+  }
+
+  private async _activateMotionSensitivity(): Promise<void> {
+    const input = this.input;
+    if (!input || input.velocityInputMode !== 'motion') return;
+    const state = await input.requestMotionPermission();
+    if (state === 'granted' && input.velocityInputMode === 'motion') input.setMotionEnabled(true);
+  }
+
+  _updateVelocityInputMode(mode: VelocityInputMode): void {
+    const slider = this.settingsPanel?.querySelector<HTMLInputElement>('.velocity-sensitivity');
+    const label = this.settingsPanel?.querySelector<HTMLLabelElement>('#velocity-sensitivity-label');
+    const output = this.settingsPanel?.querySelector<HTMLOutputElement>('.velocity-sensitivity-output');
+    const description = this.settingsPanel?.querySelector<HTMLElement>('#velocity-sensitivity-description');
+    const pressureMode = mode === 'pressure';
+    const value = this.input?.sensitivities[mode] ?? loadSensitivity(mode);
+    if (slider) {
+      slider.value = String(value);
+      slider.setAttribute('aria-describedby', pressureMode
+        ? 'velocity-sensitivity-description'
+        : 'velocity-sensitivity-description motion-permission-feedback');
+    }
+    if (label) label.textContent = pressureMode ? 'Pressure Sensitivity' : 'Motion Sensitivity';
+    if (output) output.value = String(value);
+    if (description) description.textContent = pressureMode
+      ? 'Adjusts pressure-based touch velocity.'
+      : 'Adjusts motion-based touch velocity.';
+    this.settingsPanel?.querySelectorAll<HTMLElement>('.motion-permission-guidance, .motion-permission-feedback, .motion-permission-status')
+      .forEach(element => { element.hidden = pressureMode || element.classList.contains('motion-permission-status'); });
   }
 
   reloadApp(): void {
@@ -300,7 +345,9 @@ const app = new GoodianoApp();
 // Bootstrap immediately so the shell and audio can be cached before the
 // first interaction. A gesture is used only to resume the AudioContext.
 const startApp = () => app.init().catch(error => console.error('Goodiano init failed', error));
-if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', startApp, { once: true });
-else startApp();
+if (document.querySelector('.app')) {
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', startApp, { once: true });
+  else startApp();
+}
 
 export { GoodianoApp };

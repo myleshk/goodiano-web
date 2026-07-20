@@ -5,6 +5,7 @@
 import type { PianoKey } from './model';
 
 type VelocitySource = 'pressure' | 'motion' | 'default';
+type VelocityInputMode = 'motion' | 'pressure';
 type MotionPermissionState = 'disabled' | 'unknown' | 'requesting' | 'granted' | 'denied' | 'unavailable';
 // Calibrate the accelerometer impulse to the observed motion-delta range.
 const MOTION_FULL_SCALE = 1.4;
@@ -37,6 +38,7 @@ interface InputCallbacks {
   onKeyPress?: (key: InputKey, pressed: boolean, velocity?: number) => void;
   onScroll?: (offset: number) => void;
   onMotionPermissionChange?: (state: MotionPermissionState) => void;
+  onVelocityInputModeChange?: (mode: VelocityInputMode) => void;
 }
 interface DeviceMotionEventConstructorWithPermission {
   requestPermission?: () => Promise<'granted' | 'denied'>;
@@ -47,6 +49,7 @@ class InputController {
   onKeyPress: NonNullable<InputCallbacks['onKeyPress']>;
   onScroll: NonNullable<InputCallbacks['onScroll']>;
   onMotionPermissionChange: NonNullable<InputCallbacks['onMotionPermissionChange']>;
+  onVelocityInputModeChange: NonNullable<InputCallbacks['onVelocityInputModeChange']>;
   activePointers = new Map<number, PointerState>();
   pressedKeys = new Set<string>();
   scrollOffset = 0;
@@ -60,6 +63,9 @@ class InputController {
   motionPermissionRequested = false;
   motionEnabled = false;
   motionPermissionState: MotionPermissionState = 'disabled';
+  velocityInputMode: VelocityInputMode = 'motion';
+  sensitivities: Record<VelocityInputMode, number> = { motion: 50, pressure: 50 };
+  private _motionPermissionRequest: Promise<MotionPermissionState> | null = null;
   private _handlers!: {
     down: (e: PointerEvent) => void;
     move: (e: PointerEvent) => void;
@@ -74,6 +80,7 @@ class InputController {
     this.onKeyPress = callbacks.onKeyPress || (() => {});
     this.onScroll = callbacks.onScroll || (() => {});
     this.onMotionPermissionChange = callbacks.onMotionPermissionChange || (() => {});
+    this.onVelocityInputModeChange = callbacks.onVelocityInputModeChange || (() => {});
     this._bindEvents();
   }
 
@@ -247,11 +254,20 @@ class InputController {
   }
 
   async requestMotionPermission(): Promise<MotionPermissionState> {
+    if (this.velocityInputMode === 'pressure') return 'unavailable';
     if (this.motionPermissionState === 'granted') return 'granted';
+    if (this._motionPermissionRequest) return this._motionPermissionRequest;
+    if (this.motionPermissionRequested) return this.motionPermissionState;
     this.motionPermissionRequested = true;
-    const constructor = window.DeviceMotionEvent as typeof DeviceMotionEvent & DeviceMotionEventConstructorWithPermission;
+    const request = this._requestMotionPermission();
+    this._motionPermissionRequest = request;
+    return request.finally(() => { this._motionPermissionRequest = null; });
+  }
+
+  private async _requestMotionPermission(): Promise<MotionPermissionState> {
+    const constructor = window.DeviceMotionEvent as (typeof DeviceMotionEvent & DeviceMotionEventConstructorWithPermission) | undefined;
     if (!constructor) return this._setMotionPermissionState('unavailable');
-    const permission = constructor?.requestPermission;
+    const permission = constructor.requestPermission;
     if (typeof permission !== 'function') return this._setMotionPermissionState('granted');
     this._setMotionPermissionState('requesting');
     try {
@@ -263,10 +279,16 @@ class InputController {
   }
 
   setMotionEnabled(enabled: boolean): void {
+    if (this.velocityInputMode === 'pressure') enabled = false;
     this.motionEnabled = enabled;
     this.motionSamples = [];
     if (!enabled) this._setMotionPermissionState('disabled');
     else this._setMotionPermissionState(this.motionPermissionState === 'granted' ? 'granted' : 'unknown');
+  }
+
+  setSensitivity(mode: VelocityInputMode, value: number): void {
+    if (!Number.isFinite(value)) return;
+    this.sensitivities[mode] = Math.max(1, Math.min(100, Math.round(value)));
   }
 
   _setMotionPermissionState(state: MotionPermissionState): MotionPermissionState {
@@ -288,8 +310,9 @@ class InputController {
       .map(sample => sample.magnitude);
     const base = baseline.length ? baseline.reduce((a, b) => a + b, 0) / baseline.length : samples[0].magnitude;
     const delta = Math.max(0, ...samples.map(sample => sample.magnitude - base));
+    const adjustedDelta = delta * this._sensitivityGain('motion');
     return {
-      velocity: Math.round(35 + Math.min(delta / MOTION_FULL_SCALE, 1) * 92),
+      velocity: Math.round(35 + Math.min(adjustedDelta / MOTION_FULL_SCALE, 1) * 92),
       delta,
     };
   }
@@ -300,8 +323,22 @@ class InputController {
     // Browsers report 0.5 as the generic active-touch value when the hardware
     // has no pressure sensor. Treat it as unavailable for fingers, while still
     // accepting real Apple Pencil pressure and non-default touch values.
-    if (e.pointerType !== 'pen' && Math.abs(pressure - 0.5) < 0.01) return undefined;
-    return Math.round(35 + Math.max(0, Math.min(1, pressure)) * 92);
+    if (pressure === 0.5) return undefined;
+    this._detectPressureInput();
+    const adjustedPressure = pressure * this._sensitivityGain('pressure');
+    return Math.round(35 + Math.max(0, Math.min(1, adjustedPressure)) * 92);
+  }
+
+  private _sensitivityGain(mode: VelocityInputMode): number {
+    return 2 ** ((this.sensitivities[mode] - 50) / 50);
+  }
+
+  private _detectPressureInput(): void {
+    if (this.velocityInputMode === 'pressure') return;
+    this.velocityInputMode = 'pressure';
+    this.motionEnabled = false;
+    this.motionSamples = [];
+    this.onVelocityInputModeChange('pressure');
   }
 
   _updatePointerVelocity(pointer: PointerState, event: PointerEvent): void {
@@ -338,4 +375,4 @@ class InputController {
 }
 
 export { InputController };
-export type { InputCallbacks, InputKey, MotionPermissionState, VelocitySource };
+export type { InputCallbacks, InputKey, MotionPermissionState, VelocityInputMode, VelocitySource };
