@@ -1,11 +1,11 @@
 /* Goodiano offline shell. All paths are resolved from the installed scope so
  * the app works when hosted below a domain subpath. */
-const CACHE_NAME = 'goodiano-v0.2.0';
+const CACHE_NAME = 'goodiano-v0.3.0';
 const GENERATED_ASSETS = [];
 const DEV_SHELL = [
-  './', './index.html', './css/main.css', './manifest.json',
+  './', './index.html', './css/main.css', './manifest.en.json', './manifest.zh-CN.json', './manifest.zh-TW.json',
   './js/app/model.ts', './js/app/audio.ts', './js/app/sample-zones.ts', './js/app/keyboard.ts',
-  './js/app/input.ts', './js/app/render.ts', './js/app/app.ts',
+  './js/app/input.ts', './js/app/render.ts', './js/app/i18n.ts', './js/app/app.ts',
   './assets/icons/icon-192.png', './assets/icons/icon-512.png', './assets/icons/icon-180.png',
 ];
 const SHELL = GENERATED_ASSETS.length ? GENERATED_ASSETS : DEV_SHELL;

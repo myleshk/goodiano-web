@@ -14,6 +14,15 @@ import { loadSensitivity, saveSensitivity } from './velocity-settings';
 import { KeyboardRenderer } from './render';
 import type { KeyboardLayout } from './keyboard';
 import type { PianoKey } from './model';
+import {
+  getLocale,
+  initializeLocalization,
+  setLocalePreference,
+  subscribeLocaleChange,
+  t,
+  translateDocument,
+} from './i18n';
+import type { SupportedLocale, TranslationKey } from './i18n';
 
 
 class GoodianoApp {
@@ -33,6 +42,8 @@ class GoodianoApp {
   loadingOverlay: HTMLElement | null = null;
   velocityDebug: HTMLElement | null = null;
   settingsPanel: HTMLElement | null = null;
+  private _loadingMessage: TranslationKey = 'loading.initial';
+  private _lastVelocityDebug: { key: InputKey; velocity: number } | null = null;
   private _resizeObserver: ResizeObserver | null = null;
 
   constructor() {
@@ -50,6 +61,7 @@ class GoodianoApp {
     this.loadingOverlay = document.querySelector('.loading-overlay');
     this.velocityDebug = document.querySelector('.velocity-debug');
     this.settingsPanel = document.querySelector('.settings-panel');
+    this._setupLocaleControl();
     document.querySelector<HTMLButtonElement>('.settings-toggle')?.addEventListener('click', () => {
       if (this.settingsPanel) this.settingsPanel.hidden = !this.settingsPanel.hidden;
     });
@@ -57,7 +69,7 @@ class GoodianoApp {
     loadingOverlay?.querySelector('.loading-retry')?.addEventListener('click', () => {
       loadingOverlay.classList.remove('recoverable-error');
       const text = loadingOverlay.querySelector('.loading-text');
-      if (text) text.textContent = 'Retrying audio load…';
+      this._setLoadingMessage('loading.retrying');
       this._loadAudio().then(() => {
         this._hideLoading();
         this._scrollToC4();
@@ -65,8 +77,7 @@ class GoodianoApp {
     });
     navigator.serviceWorker?.addEventListener('message', event => {
       if (event.data?.type === 'CACHE_ERROR' && this.loadingOverlay) {
-        const text = this.loadingOverlay.querySelector('.loading-text');
-        if (text) text.textContent = 'Audio loaded, but could not be saved offline. Tap to retry.';
+        this._setLoadingMessage('loading.cacheFailed');
         this.loadingOverlay.classList.add('recoverable-error');
       }
     });
@@ -105,7 +116,7 @@ class GoodianoApp {
         this.velocityDebug.hidden = !visible;
         document.querySelectorAll<HTMLElement>('.motion-permission-status')
           .forEach(status => { status.hidden = !visible || this.input?.velocityInputMode === 'pressure'; });
-        button.textContent = visible ? 'Hide Debug' : 'Show Debug';
+        button.textContent = t(visible ? 'debug.hide' : 'debug.show');
       });
     this.settingsPanel?.querySelector<HTMLButtonElement>('.app-reload-button')
       ?.addEventListener('click', () => this.reloadApp());
@@ -158,10 +169,9 @@ class GoodianoApp {
       console.error('Failed to load audio:', err);
       // Show error state
       if (this.loadingOverlay) {
-        const text = this.loadingOverlay.querySelector('.loading-text');
-        if (text) text.textContent = err instanceof DOMException && err.name === 'AbortError'
-          ? 'Audio load timed out. Tap to retry.'
-          : 'Audio failed to load. Tap to retry.';
+        this._setLoadingMessage(err instanceof DOMException && err.name === 'AbortError'
+          ? 'loading.timeout'
+          : 'loading.failed');
         this.loadingOverlay.classList.add('recoverable-error');
       }
       throw err;
@@ -185,7 +195,7 @@ class GoodianoApp {
     indicator?.setAttribute('aria-valuenow', String(value));
     if (label) label.textContent = `${value}%`;
     const text = this.loadingOverlay?.querySelector<HTMLElement>('.loading-text');
-    if (text && value >= 100) text.textContent = 'Preparing audio…';
+    if (text && value >= 100) this._setLoadingMessage('loading.preparing');
   }
 
   _scrollToC4() {
@@ -247,31 +257,41 @@ class GoodianoApp {
 
   _updateVelocityDebug(key: InputKey, velocity: number): void {
     if (!this.velocityDebug) return;
+    this._lastVelocityDebug = { key, velocity };
     const value = this.velocityDebug.querySelector<HTMLElement>('.velocity-debug-value');
     const source = this.velocityDebug.querySelector<HTMLElement>('.velocity-debug-source');
     const raw = this.velocityDebug.querySelector<HTMLElement>('.velocity-debug-raw');
     const fill = this.velocityDebug.querySelector<HTMLElement>('.velocity-debug-fill');
-    if (value) value.textContent = `${key.id}  ·  velocity ${velocity}`;
-    if (source) source.textContent = `source: ${key.velocitySource ?? 'default'}`;
+    if (value) value.textContent = t('debug.velocity', { note: key.id, velocity });
+    const sourceName = key.velocitySource ?? 'default';
+    if (source) source.textContent = t('debug.source', { source: t(`debug.source.${sourceName}`) });
     if (raw) {
       const pressure = key.pressure == null ? '--' : key.pressure.toFixed(2);
       const motion = key.motionDelta == null ? '--' : key.motionDelta.toFixed(3);
-      raw.textContent = `pressure ${pressure}  ·  motion Δ ${motion}`;
+      raw.textContent = t('debug.raw', { pressure, motion });
     }
     if (fill) fill.style.width = `${velocity / 127 * 100}%`;
   }
 
   _updateMotionPermissionDebug(state: MotionPermissionState): void {
+    const stateKeys: Record<MotionPermissionState, TranslationKey> = {
+      disabled: 'permission.state.disabled',
+      unknown: 'permission.state.unknown',
+      requesting: 'permission.state.requesting',
+      granted: 'permission.state.granted',
+      denied: 'permission.state.denied',
+      unavailable: 'permission.state.unavailable',
+    };
     document.querySelectorAll<HTMLElement>('.motion-permission-status')
-      .forEach(status => { status.textContent = `motion permission: ${state}`; });
+      .forEach(status => { status.textContent = t('permission.status', { state: t(stateKeys[state]) }); });
     const feedback = this.settingsPanel?.querySelector<HTMLElement>('.motion-permission-feedback');
     if (!feedback || this.input?.velocityInputMode === 'pressure') return;
-    const messages: Partial<Record<MotionPermissionState, string>> = {
-      requesting: 'Requesting motion permission…',
-      denied: 'Motion permission was denied.',
-      unavailable: 'Motion input is unavailable on this device.',
+    const messages: Partial<Record<MotionPermissionState, TranslationKey>> = {
+      requesting: 'permission.requesting',
+      denied: 'permission.denied',
+      unavailable: 'permission.unavailable',
     };
-    feedback.textContent = messages[state] ?? '';
+    feedback.textContent = messages[state] ? t(messages[state]) : '';
     feedback.hidden = !messages[state];
   }
 
@@ -319,11 +339,11 @@ class GoodianoApp {
         ? 'velocity-sensitivity-description'
         : 'velocity-sensitivity-description motion-permission-feedback');
     }
-    if (label) label.textContent = pressureMode ? 'Pressure Sensitivity' : 'Motion Sensitivity';
+    if (label) label.textContent = t(pressureMode ? 'velocity.pressureSensitivity' : 'velocity.motionSensitivity');
     if (output) output.value = String(value);
-    if (description) description.textContent = pressureMode
-      ? 'Adjusts pressure-based touch velocity.'
-      : 'Adjusts motion-based touch velocity.';
+    if (description) description.textContent = t(pressureMode
+      ? 'velocity.pressureDescription'
+      : 'velocity.motionDescription');
     this.settingsPanel?.querySelectorAll<HTMLElement>('.motion-permission-guidance, .motion-permission-feedback, .motion-permission-status')
       .forEach(element => { element.hidden = pressureMode || element.classList.contains('motion-permission-status'); });
     this._updateVelocityControl();
@@ -339,7 +359,7 @@ class GoodianoApp {
     const guidance = this.settingsPanel?.querySelector<HTMLElement>('.motion-permission-guidance');
     const feedback = this.settingsPanel?.querySelector<HTMLElement>('.motion-permission-feedback');
     if (toggle) {
-      toggle.textContent = enabled ? 'Disable Velocity' : 'Enable Velocity';
+      toggle.textContent = t(enabled ? 'velocity.disable' : 'velocity.enable');
       toggle.setAttribute('aria-pressed', String(enabled));
     }
     if (sensitivity) sensitivity.hidden = !enabled;
@@ -365,9 +385,54 @@ class GoodianoApp {
     const key = this.layout.keys.find(k => k.id === keyId);
     return key ? key.midiNote : 60;
   }
+
+  private _setLoadingMessage(key: TranslationKey): void {
+    this._loadingMessage = key;
+    const text = this.loadingOverlay?.querySelector<HTMLElement>('.loading-text');
+    if (text) text.textContent = t(key);
+  }
+
+  private _setupLocaleControl(): void {
+    this.settingsPanel?.querySelectorAll<HTMLButtonElement>('.locale-control [data-locale]')
+      .forEach(button => {
+        button.addEventListener('click', () => {
+          setLocalePreference(button.dataset.locale as SupportedLocale);
+          // An automatic locale can be persisted without changing the effective locale.
+          this._renderLocalizedState();
+        });
+      });
+    subscribeLocaleChange(() => this._renderLocalizedState());
+    this._renderLocalizedState();
+  }
+
+  private _renderLocalizedState(): void {
+    translateDocument();
+    const activeLocale = getLocale();
+    this.settingsPanel?.querySelectorAll<HTMLButtonElement>('.locale-control [data-locale]')
+      .forEach(button => {
+        button.setAttribute('aria-pressed', String(button.dataset.locale === activeLocale));
+      });
+    this._setLoadingMessage(this._loadingMessage);
+    if (this.input) {
+      this._updateVelocityInputMode(this.input.velocityInputMode);
+      this._updateMotionPermissionDebug(this.input.motionPermissionState);
+    }
+    const debugButton = this.settingsPanel?.querySelector<HTMLButtonElement>('.velocity-debug-toggle');
+    if (debugButton) debugButton.textContent = t(this.velocityDebug?.hidden === false ? 'debug.hide' : 'debug.show');
+    if (this._lastVelocityDebug) {
+      this._updateVelocityDebug(this._lastVelocityDebug.key, this._lastVelocityDebug.velocity);
+    } else {
+      const source = this.velocityDebug?.querySelector<HTMLElement>('.velocity-debug-source');
+      const raw = this.velocityDebug?.querySelector<HTMLElement>('.velocity-debug-raw');
+      if (source) source.textContent = t('debug.source', { source: '--' });
+      if (raw) raw.textContent = t('debug.raw', { pressure: '--', motion: '--' });
+    }
+  }
 }
 
 // Bootstrap
+initializeLocalization();
+translateDocument();
 const app = new GoodianoApp();
 
 // Bootstrap immediately so the shell and audio can be cached before the

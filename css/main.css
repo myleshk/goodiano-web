@@ -227,6 +227,43 @@ html, body {
   font-size: 12px;
 }
 
+.locale-control {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  margin-bottom: 7px;
+  border: 1px solid rgba(255,255,255,0.2);
+  border-radius: 5px;
+  overflow: hidden;
+}
+
+.locale-control button {
+  padding: 6px 10px;
+  appearance: none;
+  border: 0;
+  border-left: 1px solid rgba(255,255,255,0.2);
+  color: rgba(255,255,255,0.68);
+  background: rgba(255,255,255,0.04);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.2;
+  cursor: pointer;
+}
+
+.locale-control button:first-child {
+  border-left: 0;
+}
+
+.locale-control button[aria-pressed="true"] {
+  color: #111;
+  background: rgba(255,255,255,0.9);
+}
+
+.locale-control button:focus-visible {
+  position: relative;
+  outline: 2px solid #7db8ff;
+  outline-offset: -2px;
+}
+
 .sensitivity-control label {
   display: block;
   margin-top: 8px;

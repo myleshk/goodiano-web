@@ -1,6 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { GoodianoApp } from '../../js/app/app';
+import { initializeLocalization, setLocalePreference } from '../../js/app/i18n';
 import { VELOCITY_SENSITIVITY_STORAGE_KEYS } from '../../js/app/velocity-settings';
+
+const originalLanguages = Object.getOwnPropertyDescriptor(Navigator.prototype, 'languages');
+const originalLanguage = Object.getOwnPropertyDescriptor(Navigator.prototype, 'language');
+
+function setBrowserLanguages(languages: string[]): void {
+  Object.defineProperty(Navigator.prototype, 'languages', { configurable: true, get: () => languages });
+  Object.defineProperty(Navigator.prototype, 'language', { configurable: true, get: () => languages[0] ?? '' });
+}
 
 function mountAppShell(): void {
   document.body.innerHTML = `
@@ -10,6 +19,11 @@ function mountAppShell(): void {
     </main>
     <button class="settings-toggle" type="button"></button>
     <section class="settings-panel" aria-label="Settings">
+      <div class="locale-control" role="group" aria-label="Language" data-i18n-aria-label="settings.language">
+        <button type="button" data-locale="en" aria-pressed="false">EN</button>
+        <button type="button" data-locale="zh-CN" aria-pressed="false">简</button>
+        <button type="button" data-locale="zh-TW" aria-pressed="false">繁</button>
+      </div>
       <button class="velocity-toggle" type="button" aria-pressed="false">Enable Velocity</button>
       <div class="sensitivity-control" hidden>
         <label id="velocity-sensitivity-label" for="velocity-sensitivity">Motion Sensitivity</label>
@@ -42,11 +56,39 @@ async function setupApp(): Promise<GoodianoApp> {
 afterEach(() => {
   document.body.innerHTML = '';
   localStorage.clear();
+  setLocalePreference('system');
+  if (originalLanguages) Object.defineProperty(Navigator.prototype, 'languages', originalLanguages);
+  if (originalLanguage) Object.defineProperty(Navigator.prototype, 'language', originalLanguage);
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
 describe('adaptive velocity sensitivity control', () => {
+  it('uses direct locale buttons and converts the active automatic locale into an override', async () => {
+    setBrowserLanguages(['zh-CN']);
+    initializeLocalization({ getItem: () => null });
+    mountAppShell();
+    await setupApp();
+
+    const group = document.querySelector<HTMLElement>('.locale-control')!;
+    const buttons = [...group.querySelectorAll<HTMLButtonElement>('[data-locale]')];
+    expect(buttons.map(button => button.textContent)).toEqual(['EN', '简', '繁']);
+    expect(document.querySelector('select')).toBeNull();
+    expect(group.getAttribute('aria-label')).toBe('语言');
+    expect(buttons.map(button => button.getAttribute('aria-pressed'))).toEqual(['false', 'true', 'false']);
+    expect(localStorage.getItem('goodiano.locale.v1')).toBeNull();
+
+    setBrowserLanguages(['zh-TW']);
+    window.dispatchEvent(new Event('languagechange'));
+    expect(buttons.map(button => button.getAttribute('aria-pressed'))).toEqual(['false', 'false', 'true']);
+
+    buttons[2].click();
+    expect(localStorage.getItem('goodiano.locale.v1')).toBe('zh-TW');
+    setBrowserLanguages(['en']);
+    window.dispatchEvent(new Event('languagechange'));
+    expect(buttons.map(button => button.getAttribute('aria-pressed'))).toEqual(['false', 'false', 'true']);
+  });
+
   it('enables motion velocity from the generic control and restores its sensitivity', async () => {
     mountAppShell();
     localStorage.setItem(VELOCITY_SENSITIVITY_STORAGE_KEYS.motion, '42');
@@ -61,7 +103,7 @@ describe('adaptive velocity sensitivity control', () => {
     expect((document.querySelector('.sensitivity-control') as HTMLElement).hidden).toBe(true);
     expect(slider.type).toBe('range');
     expect(slider.value).toBe('42');
-    expect(document.querySelector('label')?.htmlFor).toBe(slider.id);
+    expect(document.querySelector<HTMLLabelElement>('#velocity-sensitivity-label')?.htmlFor).toBe(slider.id);
     expect(document.querySelector('output')?.textContent).toBe('42');
 
     toggle.click();
@@ -140,5 +182,31 @@ describe('adaptive velocity sensitivity control', () => {
     expect((document.querySelector('.sensitivity-control') as HTMLElement).hidden).toBe(true);
     app.input!._velocityFromPressure(new PointerEvent('pointerdown', { pressure: 0.8, pointerType: 'pen' }));
     expect(app.input!.velocityEnabled).toBe(false);
+  });
+
+  it('translates live without rebuilding audio or input state', async () => {
+    mountAppShell();
+    document.head.innerHTML = `
+      <meta name="description" content="">
+      <link rel="manifest" href="./manifest.en.json">
+    `;
+    const app = await setupApp();
+    const audio = app.audio;
+    const input = app.input;
+    input!.setSensitivity('motion', 67);
+    input!._setMotionPermissionState('denied');
+
+    document.querySelector<HTMLButtonElement>('[data-locale="zh-TW"]')!.click();
+
+    expect(app.audio).toBe(audio);
+    expect(app.input).toBe(input);
+    expect(app.input?.sensitivities.motion).toBe(67);
+    expect(app.input?.motionPermissionState).toBe('denied');
+    expect(document.documentElement.lang).toBe('zh-TW');
+    expect(document.querySelector('.velocity-toggle')?.textContent).toBe('啟用力度感應');
+    expect(document.querySelector('.motion-permission-feedback')?.textContent).toContain('拒絕');
+    expect(document.querySelector('meta[name="description"]')?.getAttribute('content')).toContain('虛擬鋼琴');
+    expect(document.querySelector('link[rel="manifest"]')?.getAttribute('href')).toBe('./manifest.zh-TW.json');
+    expect(localStorage.getItem('goodiano.locale.v1')).toBe('zh-TW');
   });
 });

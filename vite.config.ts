@@ -12,7 +12,9 @@ function serviceWorkerPlugin(): Plugin {
       generatedAssets.push(
         './',
         './index.html',
-        './manifest.json',
+        './manifest.en.json',
+        './manifest.zh-CN.json',
+        './manifest.zh-TW.json',
         './assets/icons/icon-180.png',
         './assets/icons/icon-192.png',
         './assets/icons/icon-512.png',
