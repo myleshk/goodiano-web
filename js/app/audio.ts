@@ -63,32 +63,58 @@ class PianoAudioEngine {
     this.masterGain = this.ctx.createGain();
     this.masterGain.gain.value = MASTER_GAIN;
     this.masterGain.connect(this.ctx.destination);
+    this.ctx.onstatechange = () => this._handleStateChange();
     this.state = this.ctx.state === 'running' && this.loaded ? 'ready' :
       this.ctx.state === 'running' ? 'loading' : 'awaitingGesture';
     return this.ctx;
   }
 
-  async ensureRunning(): Promise<boolean> {
-    const ctx = await this.init();
-    if (ctx.state === 'closed') throw new Error('AudioContext is closed');
-    const wasRunning = ctx.state === 'running';
-    if (ctx.state !== 'running') {
-      configurePlaybackAudioSession();
-      await ctx.resume();
-    }
+  /**
+   * Handle context state changes. When the context reaches 'running',
+   * flush any queued notes. When it leaves 'running' (suspended or
+   * interrupted), mark the engine as awaiting a gesture.
+   */
+  private _handleStateChange(): void {
+    const ctx = this.ctx;
+    if (!ctx) return;
     if (ctx.state === 'running') {
       this.state = this.loaded ? 'ready' : 'loading';
-      // Safari can suspend a context while fingers are still down. Rebuild
-      // those voices from the held-key snapshot after resuming.
-      if (!wasRunning) {
+      this._flushQueuedNotes();
+    } else if (ctx.state === 'suspended' || (ctx.state as string) === 'interrupted') {
+      this.state = 'awaitingGesture';
+    }
+  }
+
+  /**
+   * Resume the AudioContext. Must be called synchronously from a user
+   * gesture handler — iOS Safari ignores resume() calls that cross a
+   * microtask/task boundary (e.g. after await).
+   */
+  ensureRunning(): void {
+    const ctx = this.ctx;
+    if (!ctx || ctx.state === 'closed') return;
+    if (ctx.state === 'running') {
+      this.state = this.loaded ? 'ready' : 'loading';
+      return;
+    }
+    configurePlaybackAudioSession();
+    // Call resume() synchronously to stay within the gesture context.
+    // Do NOT cache the promise — if resume is ignored by iOS (no gesture),
+    // the promise never resolves and would block all future attempts.
+    ctx.resume().then(() => {
+      if (ctx.state === 'running') {
+        this.state = this.loaded ? 'ready' : 'loading';
+        // Safari can suspend a context while fingers are still down.
+        // Rebuild those voices from the held-key snapshot after resuming.
         for (const active of [...this.voices]) this._stopVoice(active);
         for (const note of this.heldNotes.values()) this.queuedNotes.set(note.keyId, note);
         this._flushQueuedNotes();
+      } else {
+        this.state = 'awaitingGesture';
       }
-    } else {
+    }).catch(() => {
       this.state = 'awaitingGesture';
-    }
-    return ctx.state === 'running';
+    });
   }
 
   /** Download and natively decode the shared audio sprite. */

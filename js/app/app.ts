@@ -145,13 +145,21 @@ class GoodianoApp {
     }).catch(() => {});
 
     this._handleScroll(0);
+    // Resume the AudioContext on every real gesture (pointer + touch/mouse
+    // fallback for older iOS). Persistent so background-return taps also work.
+    // Cheap early-return inside ensureRunning when already running.
+    const resumeOnGesture = () => { this.audio.ensureRunning(); };
+    for (const eventName of ['pointerdown', 'touchstart', 'mousedown']) {
+      document.addEventListener(eventName, resumeOnGesture, { capture: true, passive: true });
+    }
     document.addEventListener('visibilitychange', () => {
       if (document.hidden) {
         this.input?.releaseAll();
         this.audio.allNotesOff();
-      } else {
-        this.audio.ensureRunning().catch(() => {});
       }
+      // On show: do not call resume() here — visibilitychange is not a user
+      // gesture on iOS, so it would be ignored. The gesture listener above
+      // resumes on the next tap.
     });
     window.addEventListener('pagehide', () => {
       this.input?.releaseAll();
@@ -256,7 +264,7 @@ class GoodianoApp {
   _handleKeyPress(key: InputKey, pressed: boolean, velocity?: number): void {
     if (!this.renderer) return;
     if (pressed) {
-      this.audio.ensureRunning().catch(() => {});
+      this.audio.ensureRunning();
       this.audio.noteOn(key.id, this._getMidiNote(key.id), velocity);
       this._updateVelocityDebug(key, velocity ?? DEFAULT_VELOCITY);
     } else {

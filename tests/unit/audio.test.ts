@@ -6,10 +6,14 @@ import { YAMAHA_U1_ZONES } from '../../js/app/sample-zones';
 class FakeAudioContext {
   state: AudioContextState = 'suspended';
   destination = {};
+  onstatechange: ((event: Event) => void) | null = null;
   createGain() {
     return { gain: { value: 0 }, connect: vi.fn(), disconnect: vi.fn() };
   }
-  async resume() { this.state = 'running'; }
+  async resume() {
+    this.state = 'running';
+    this.onstatechange?.({} as Event);
+  }
 }
 
 function responseWith(bytes = new Uint8Array([1, 2, 3, 4])) {
@@ -243,8 +247,10 @@ describe('PianoAudioEngine playback', () => {
     vi.stubGlobal('navigator', { audioSession });
     vi.stubGlobal('window', { AudioContext: OrderedAudioContext });
     const engine = new PianoAudioEngine();
-    expect(await engine.ensureRunning()).toBe(true);
-    expect(engine.ctx?.state).toBe('running');
+    await engine.init();
+    engine.ensureRunning();
+    // Wait for the resume promise to settle.
+    await vi.waitFor(() => expect(engine.ctx?.state).toBe('running'));
     expect(events).toEqual(['session:playback', 'session:playback', 'resume']);
   });
 
@@ -293,5 +299,98 @@ describe('PianoAudioEngine playback', () => {
     expect(held.source.stop).toHaveBeenLastCalledWith(0);
     expect(engine.voices.size).toBe(0);
     expect(engine.activeNotes.size).toBe(0);
+  });
+
+  it('calls resume on each ensureRunning when suspended (no promise caching)', async () => {
+    let resumeCalls = 0;
+    class DeferredAudioContext extends FakeAudioContext {
+      async resume() {
+        resumeCalls += 1;
+        // Defer the state change so both ensureRunning calls see 'suspended'.
+        await new Promise(resolve => setTimeout(resolve, 10));
+        this.state = 'running';
+        this.onstatechange?.({} as Event);
+      }
+    }
+    vi.stubGlobal('navigator', {});
+    vi.stubGlobal('window', { AudioContext: DeferredAudioContext });
+    const engine = new PianoAudioEngine();
+    await engine.init();
+
+    // Each call should attempt resume — no caching that could get stuck.
+    engine.ensureRunning();
+    engine.ensureRunning();
+
+    expect(resumeCalls).toBe(2);
+    await vi.waitFor(() => expect(engine.ctx?.state).toBe('running'));
+  });
+
+  it('flushes queued notes when the context transitions to running', async () => {
+    const { engine, createdSources } = readyEngine();
+    const ctx = engine.ctx as unknown as FakeAudioContext;
+    ctx.onstatechange = () => (engine as unknown as { _handleStateChange(): void })._handleStateChange();
+    ctx.state = 'suspended';
+    engine.noteOn('C4', 60);
+    expect(createdSources).toHaveLength(0);
+
+    ctx.state = 'running';
+    ctx.onstatechange?.({} as Event);
+
+    expect(createdSources).toHaveLength(1);
+    expect(engine.queuedNotes.size).toBe(0);
+  });
+
+  it('rebuilds held voices on resume without double-starting notes', async () => {
+    vi.stubGlobal('navigator', {});
+    vi.stubGlobal('window', { AudioContext: FakeAudioContext });
+    const engine = new PianoAudioEngine();
+    await engine.init();
+    const ctx = engine.ctx as unknown as FakeAudioContext;
+    // Simulate a loaded engine with playing notes.
+    engine.sampleBuffer = {} as AudioBuffer;
+    engine.zones = [{ loKey: 0, hiKey: 127, rootKey: 60, offsetSeconds: 0, durationSeconds: 1 }];
+    engine.loaded = true;
+    const createdSources: Array<{ start: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn> }> = [];
+    (ctx as unknown as Record<string, unknown>).createBufferSource = vi.fn(() => {
+      const source = {
+        buffer: null, playbackRate: { value: 0 },
+        connect: vi.fn(), disconnect: vi.fn(),
+        start: vi.fn(), stop: vi.fn(), onended: null,
+      };
+      createdSources.push(source);
+      return source;
+    });
+    (ctx as unknown as Record<string, unknown>).createGain = vi.fn(() => ({
+      gain: { value: 0, cancelScheduledValues: vi.fn(), setValueAtTime: vi.fn(), linearRampToValueAtTime: vi.fn() },
+      connect: vi.fn(), disconnect: vi.fn(),
+    }));
+    engine.masterGain = {} as GainNode;
+
+    // Start two notes while running.
+    ctx.state = 'running';
+    engine.noteOn('C4', 60);
+    engine.noteOn('E4', 64);
+    expect(createdSources).toHaveLength(2);
+
+    // Simulate iOS suspending the context.
+    ctx.state = 'suspended';
+
+    // Resume via ensureRunning — should stop old voices and rebuild from held.
+    engine.ensureRunning();
+    await vi.waitFor(() => expect(engine.ctx?.state).toBe('running'));
+    // Wait for the rebuild + flush microtask.
+    await vi.waitFor(() => expect(createdSources.length).toBe(4));
+
+    // Two original voices stopped, two rebuilt from held snapshot.
+    expect(engine.voices.size).toBe(2);
+    expect(engine.queuedNotes.size).toBe(0);
+  });
+
+  it('marks awaitingGesture when the context is interrupted', () => {
+    const { engine } = readyEngine();
+    const ctx = engine.ctx as unknown as FakeAudioContext;
+    ctx.state = 'interrupted' as AudioContextState;
+    (engine as unknown as { _handleStateChange(): void })._handleStateChange();
+    expect(engine.state).toBe('awaitingGesture');
   });
 });
