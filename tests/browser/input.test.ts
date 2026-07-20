@@ -31,6 +31,11 @@ function setup() {
   return { container, input, presses, scrolls, velocities, velocitySources };
 }
 
+function enableMotion(input: InputController): void {
+  input._setMotionPermissionState('granted');
+  input.setVelocityEnabled(true);
+}
+
 afterEach(() => {
   document.body.innerHTML = '';
   vi.restoreAllMocks();
@@ -107,7 +112,7 @@ describe('pointer input', () => {
 
   it('switches to pressure mode, stops motion, and clears its samples', () => {
     const { container, input } = setup();
-    input.setMotionEnabled(true);
+    enableMotion(input);
     input.motionSamples = [{ time: performance.now(), magnitude: 2 }];
 
     container.dispatchEvent(pointer('pointerdown', 1, 20, 20, 0.25, 'pen'));
@@ -134,7 +139,7 @@ describe('pointer input', () => {
 
   it('applies a recent motion impulse to the initial note', () => {
     const { container, input, velocities } = setup();
-    input.setMotionEnabled(true);
+    enableMotion(input);
     const now = performance.now();
     input.motionSamples = [
       { time: now - 150, magnitude: 1 },
@@ -149,7 +154,7 @@ describe('pointer input', () => {
   it('applies independent motion sensitivity gains around the unchanged midpoint', () => {
     const values = (sensitivity: number) => {
       const { container, input, velocities } = setup();
-      input.setMotionEnabled(true);
+      enableMotion(input);
       input.setSensitivity('motion', sensitivity);
       const now = performance.now();
       input.motionSamples = [
@@ -168,7 +173,7 @@ describe('pointer input', () => {
 
   it('applies motion sensitivity and still prefers pressure when both exist', () => {
     const { container, input, velocities, velocitySources } = setup();
-    input.setMotionEnabled(true);
+    enableMotion(input);
     input.setSensitivity('motion', 100);
     const now = performance.now();
     input.motionSamples = [
@@ -208,6 +213,58 @@ describe('pointer input', () => {
     expect(requestPermission).toHaveBeenCalledOnce();
     resolvePermission('granted');
     await expect(Promise.all([first, second])).resolves.toEqual(['granted', 'granted']);
+    input.destroy();
+  });
+
+  it('keeps granted motion permission when velocity is disabled and re-enabled', () => {
+    const { input } = setup();
+    enableMotion(input);
+    input.motionSamples = [{ time: performance.now(), magnitude: 2 }];
+
+    input.setVelocityEnabled(false);
+    expect(input.velocityEnabled).toBe(false);
+    expect(input.motionEnabled).toBe(false);
+    expect(input.motionPermissionState).toBe('granted');
+    expect(input.motionSamples).toEqual([]);
+
+    input.setVelocityEnabled(true);
+    expect(input.velocityEnabled).toBe(true);
+    expect(input.motionEnabled).toBe(true);
+    input.destroy();
+  });
+
+  it('detects pressure while disabled without reactivating velocity', () => {
+    const { container, input, velocities, velocitySources } = setup();
+    input.setVelocityEnabled(false);
+
+    container.dispatchEvent(pointer('pointerdown', 1, 20, 20, 0.4, 'pen'));
+    expect(input.pressureDetected).toBe(true);
+    expect(input.velocityInputMode).toBe('pressure');
+    expect(input.velocityEnabled).toBe(false);
+    expect(velocities).toEqual([undefined]);
+    expect(velocitySources).toEqual(['default']);
+    container.dispatchEvent(pointer('pointerup', 1, 20));
+
+    container.dispatchEvent(pointer('pointerdown', 2, 20, 20, 0.8, 'pen'));
+    expect(input.velocityEnabled).toBe(false);
+    expect(velocities).toEqual([undefined, undefined]);
+
+    input.setVelocityEnabled(true);
+    expect(input.velocityEnabled).toBe(true);
+    expect(input.motionEnabled).toBe(false);
+    input.destroy();
+  });
+
+  it('allows denied motion permission to be retried', async () => {
+    const requestPermission = vi.fn()
+      .mockResolvedValueOnce('denied')
+      .mockResolvedValueOnce('granted');
+    vi.stubGlobal('DeviceMotionEvent', { requestPermission });
+    const input = new InputController(document.createElement('div'));
+
+    await expect(input.requestMotionPermission()).resolves.toBe('denied');
+    await expect(input.requestMotionPermission()).resolves.toBe('granted');
+    expect(requestPermission).toHaveBeenCalledTimes(2);
     input.destroy();
   });
 

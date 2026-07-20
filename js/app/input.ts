@@ -39,6 +39,7 @@ interface InputCallbacks {
   onScroll?: (offset: number) => void;
   onMotionPermissionChange?: (state: MotionPermissionState) => void;
   onVelocityInputModeChange?: (mode: VelocityInputMode) => void;
+  onVelocityEnabledChange?: (enabled: boolean) => void;
 }
 interface DeviceMotionEventConstructorWithPermission {
   requestPermission?: () => Promise<'granted' | 'denied'>;
@@ -50,6 +51,7 @@ class InputController {
   onScroll: NonNullable<InputCallbacks['onScroll']>;
   onMotionPermissionChange: NonNullable<InputCallbacks['onMotionPermissionChange']>;
   onVelocityInputModeChange: NonNullable<InputCallbacks['onVelocityInputModeChange']>;
+  onVelocityEnabledChange: NonNullable<InputCallbacks['onVelocityEnabledChange']>;
   activePointers = new Map<number, PointerState>();
   pressedKeys = new Set<string>();
   scrollOffset = 0;
@@ -60,12 +62,14 @@ class InputController {
   screenToKeyboardCoord: ((clientX: number, clientY: number) => Point | null) | null = null;
   hitTestFn: ((x: number, y: number) => PianoKey | null) | null = null;
   motionSamples: MotionSample[] = [];
-  motionPermissionRequested = false;
   motionEnabled = false;
-  motionPermissionState: MotionPermissionState = 'disabled';
+  motionPermissionState: MotionPermissionState = 'unknown';
+  velocityEnabled = false;
+  pressureDetected = false;
   velocityInputMode: VelocityInputMode = 'motion';
   sensitivities: Record<VelocityInputMode, number> = { motion: 50, pressure: 50 };
   private _motionPermissionRequest: Promise<MotionPermissionState> | null = null;
+  private _velocityExplicitlyDisabled = false;
   private _handlers!: {
     down: (e: PointerEvent) => void;
     move: (e: PointerEvent) => void;
@@ -81,6 +85,7 @@ class InputController {
     this.onScroll = callbacks.onScroll || (() => {});
     this.onMotionPermissionChange = callbacks.onMotionPermissionChange || (() => {});
     this.onVelocityInputModeChange = callbacks.onVelocityInputModeChange || (() => {});
+    this.onVelocityEnabledChange = callbacks.onVelocityEnabledChange || (() => {});
     this._bindEvents();
   }
 
@@ -257,8 +262,6 @@ class InputController {
     if (this.velocityInputMode === 'pressure') return 'unavailable';
     if (this.motionPermissionState === 'granted') return 'granted';
     if (this._motionPermissionRequest) return this._motionPermissionRequest;
-    if (this.motionPermissionRequested) return this.motionPermissionState;
-    this.motionPermissionRequested = true;
     const request = this._requestMotionPermission();
     this._motionPermissionRequest = request;
     return request.finally(() => { this._motionPermissionRequest = null; });
@@ -279,11 +282,16 @@ class InputController {
   }
 
   setMotionEnabled(enabled: boolean): void {
-    if (this.velocityInputMode === 'pressure') enabled = false;
-    this.motionEnabled = enabled;
+    this.motionEnabled = enabled && this.velocityEnabled && !this.pressureDetected;
     this.motionSamples = [];
-    if (!enabled) this._setMotionPermissionState('disabled');
-    else this._setMotionPermissionState(this.motionPermissionState === 'granted' ? 'granted' : 'unknown');
+  }
+
+  setVelocityEnabled(enabled: boolean): void {
+    this._velocityExplicitlyDisabled = !enabled;
+    const canEnable = this.pressureDetected || this.motionPermissionState === 'granted';
+    this.velocityEnabled = enabled && canEnable;
+    this.setMotionEnabled(this.velocityEnabled && !this.pressureDetected && this.motionPermissionState === 'granted');
+    this.onVelocityEnabledChange(this.velocityEnabled);
   }
 
   setSensitivity(mode: VelocityInputMode, value: number): void {
@@ -325,6 +333,7 @@ class InputController {
     // accepting real Apple Pencil pressure and non-default touch values.
     if (pressure === 0.5) return undefined;
     this._detectPressureInput();
+    if (!this.velocityEnabled) return undefined;
     const adjustedPressure = pressure * this._sensitivityGain('pressure');
     return Math.round(35 + Math.max(0, Math.min(1, adjustedPressure)) * 92);
   }
@@ -334,17 +343,24 @@ class InputController {
   }
 
   private _detectPressureInput(): void {
-    if (this.velocityInputMode === 'pressure') return;
+    if (this.pressureDetected) return;
+    this.pressureDetected = true;
     this.velocityInputMode = 'pressure';
     this.motionEnabled = false;
     this.motionSamples = [];
+    if (!this._velocityExplicitlyDisabled) {
+      this.velocityEnabled = true;
+      this.onVelocityEnabledChange(true);
+    }
     this.onVelocityInputModeChange('pressure');
   }
 
   _updatePointerVelocity(pointer: PointerState, event: PointerEvent): void {
     pointer.pressure = Number.isFinite(event.pressure) ? event.pressure : undefined;
     const pressureVelocity = this._velocityFromPressure(event);
-    const motion = this._estimateVelocity(pointer.motionStart);
+    const motion = this.velocityEnabled && this.motionEnabled
+      ? this._estimateVelocity(pointer.motionStart)
+      : undefined;
     pointer.motionDelta = motion?.delta;
     if (pressureVelocity !== undefined) {
       pointer.velocity = pressureVelocity;

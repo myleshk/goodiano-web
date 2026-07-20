@@ -52,7 +52,8 @@
   <button class="settings-toggle" type="button" aria-label="Open settings">⚙</button>
 
   <section class="settings-panel" hidden aria-label="Settings">
-    <div class="sensitivity-control">
+    <button class="settings-action velocity-toggle" type="button" aria-pressed="false">Enable Velocity</button>
+    <div class="sensitivity-control" hidden>
       <label id="velocity-sensitivity-label" for="velocity-sensitivity">Motion Sensitivity</label>
       <div class="sensitivity-input-row">
         <input id="velocity-sensitivity" class="velocity-sensitivity" type="range" min="1" max="100" value="50"

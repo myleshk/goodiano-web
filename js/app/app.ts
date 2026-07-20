@@ -91,6 +91,7 @@ class GoodianoApp {
       onScroll: (offset) => this._handleScroll(offset),
       onMotionPermissionChange: state => this._updateMotionPermissionDebug(state),
       onVelocityInputModeChange: mode => this._updateVelocityInputMode(mode),
+      onVelocityEnabledChange: () => this._updateVelocityControl(),
     });
     this.input.setSensitivity('motion', loadSensitivity('motion'));
     this.input.setSensitivity('pressure', loadSensitivity('pressure'));
@@ -276,10 +277,9 @@ class GoodianoApp {
 
   private _setupSensitivityControl(): void {
     const slider = this.settingsPanel?.querySelector<HTMLInputElement>('.velocity-sensitivity');
-    if (!slider || !this.input) return;
-    const activateMotion = () => { void this._activateMotionSensitivity(); };
-    slider.addEventListener('pointerdown', activateMotion, { once: true });
-    slider.addEventListener('keydown', activateMotion, { once: true });
+    const toggle = this.settingsPanel?.querySelector<HTMLButtonElement>('.velocity-toggle');
+    if (!slider || !toggle || !this.input) return;
+    toggle.addEventListener('click', () => { void this._toggleVelocity(); });
     slider.addEventListener('input', () => {
       const mode = this.input?.velocityInputMode ?? 'motion';
       const value = saveSensitivity(mode, Number(slider.value));
@@ -290,11 +290,20 @@ class GoodianoApp {
     this._updateVelocityInputMode('motion');
   }
 
-  private async _activateMotionSensitivity(): Promise<void> {
+  private async _toggleVelocity(): Promise<void> {
     const input = this.input;
-    if (!input || input.velocityInputMode !== 'motion') return;
+    if (!input) return;
+    if (input.velocityEnabled) {
+      input.setVelocityEnabled(false);
+      return;
+    }
+    if (input.pressureDetected || input.motionPermissionState === 'granted') {
+      input.setVelocityEnabled(true);
+      return;
+    }
     const state = await input.requestMotionPermission();
-    if (state === 'granted' && input.velocityInputMode === 'motion') input.setMotionEnabled(true);
+    if (state === 'granted' && !input.pressureDetected) input.setVelocityEnabled(true);
+    this._updateVelocityControl();
   }
 
   _updateVelocityInputMode(mode: VelocityInputMode): void {
@@ -317,6 +326,25 @@ class GoodianoApp {
       : 'Adjusts motion-based touch velocity.';
     this.settingsPanel?.querySelectorAll<HTMLElement>('.motion-permission-guidance, .motion-permission-feedback, .motion-permission-status')
       .forEach(element => { element.hidden = pressureMode || element.classList.contains('motion-permission-status'); });
+    this._updateVelocityControl();
+  }
+
+  private _updateVelocityControl(): void {
+    const input = this.input;
+    if (!input) return;
+    const enabled = input.velocityEnabled;
+    const pressureMode = input.pressureDetected;
+    const toggle = this.settingsPanel?.querySelector<HTMLButtonElement>('.velocity-toggle');
+    const sensitivity = this.settingsPanel?.querySelector<HTMLElement>('.sensitivity-control');
+    const guidance = this.settingsPanel?.querySelector<HTMLElement>('.motion-permission-guidance');
+    const feedback = this.settingsPanel?.querySelector<HTMLElement>('.motion-permission-feedback');
+    if (toggle) {
+      toggle.textContent = enabled ? 'Disable Velocity' : 'Enable Velocity';
+      toggle.setAttribute('aria-pressed', String(enabled));
+    }
+    if (sensitivity) sensitivity.hidden = !enabled;
+    if (guidance) guidance.hidden = pressureMode || enabled;
+    if (feedback && pressureMode) feedback.hidden = true;
   }
 
   reloadApp(): void {

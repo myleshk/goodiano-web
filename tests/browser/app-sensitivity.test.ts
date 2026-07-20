@@ -10,7 +10,8 @@ function mountAppShell(): void {
     </main>
     <button class="settings-toggle" type="button"></button>
     <section class="settings-panel" aria-label="Settings">
-      <div class="sensitivity-control">
+      <button class="velocity-toggle" type="button" aria-pressed="false">Enable Velocity</button>
+      <div class="sensitivity-control" hidden>
         <label id="velocity-sensitivity-label" for="velocity-sensitivity">Motion Sensitivity</label>
         <input id="velocity-sensitivity" class="velocity-sensitivity" type="range" min="1" max="100" value="50"
           aria-describedby="velocity-sensitivity-description motion-permission-feedback">
@@ -46,22 +47,29 @@ afterEach(() => {
 });
 
 describe('adaptive velocity sensitivity control', () => {
-  it('restores motion sensitivity and requests motion on first slider interaction', async () => {
+  it('enables motion velocity from the generic control and restores its sensitivity', async () => {
     mountAppShell();
     localStorage.setItem(VELOCITY_SENSITIVITY_STORAGE_KEYS.motion, '42');
     const requestPermission = vi.fn().mockResolvedValue('granted');
     vi.stubGlobal('DeviceMotionEvent', { requestPermission });
     const app = await setupApp();
     const slider = document.querySelector<HTMLInputElement>('.velocity-sensitivity')!;
+    const toggle = document.querySelector<HTMLButtonElement>('.velocity-toggle')!;
 
+    expect(toggle.textContent).toBe('Enable Velocity');
+    expect(toggle.getAttribute('aria-pressed')).toBe('false');
+    expect((document.querySelector('.sensitivity-control') as HTMLElement).hidden).toBe(true);
     expect(slider.type).toBe('range');
     expect(slider.value).toBe('42');
     expect(document.querySelector('label')?.htmlFor).toBe(slider.id);
     expect(document.querySelector('output')?.textContent).toBe('42');
 
-    slider.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+    toggle.click();
     await vi.waitFor(() => expect(app.input?.motionEnabled).toBe(true));
     expect(requestPermission).toHaveBeenCalledOnce();
+    expect(toggle.textContent).toBe('Disable Velocity');
+    expect(toggle.getAttribute('aria-pressed')).toBe('true');
+    expect((document.querySelector('.sensitivity-control') as HTMLElement).hidden).toBe(false);
 
     slider.value = '61';
     slider.dispatchEvent(new Event('input', { bubbles: true }));
@@ -69,15 +77,39 @@ describe('adaptive velocity sensitivity control', () => {
     expect(localStorage.getItem(VELOCITY_SENSITIVITY_STORAGE_KEYS.motion)).toBe('61');
   });
 
-  it('reports denied permission from keyboard interaction', async () => {
+  it('reports denied permission and keeps the enable control retryable', async () => {
     mountAppShell();
     const requestPermission = vi.fn().mockResolvedValue('denied');
     vi.stubGlobal('DeviceMotionEvent', { requestPermission });
     await setupApp();
-    const slider = document.querySelector<HTMLInputElement>('.velocity-sensitivity')!;
+    const toggle = document.querySelector<HTMLButtonElement>('.velocity-toggle')!;
 
-    slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    toggle.click();
     await vi.waitFor(() => expect(document.querySelector('.motion-permission-feedback')?.textContent).toContain('denied'));
+    expect(requestPermission).toHaveBeenCalledOnce();
+    expect(toggle.textContent).toBe('Enable Velocity');
+    expect((document.querySelector('.sensitivity-control') as HTMLElement).hidden).toBe(true);
+
+    toggle.click();
+    await vi.waitFor(() => expect(requestPermission).toHaveBeenCalledTimes(2));
+  });
+
+  it('disables and re-enables motion without requesting permission again', async () => {
+    mountAppShell();
+    const requestPermission = vi.fn().mockResolvedValue('granted');
+    vi.stubGlobal('DeviceMotionEvent', { requestPermission });
+    const app = await setupApp();
+    const toggle = document.querySelector<HTMLButtonElement>('.velocity-toggle')!;
+
+    toggle.click();
+    await vi.waitFor(() => expect(app.input?.velocityEnabled).toBe(true));
+    toggle.click();
+    expect(app.input?.velocityEnabled).toBe(false);
+    expect(app.input?.motionPermissionState).toBe('granted');
+    expect((document.querySelector('.sensitivity-control') as HTMLElement).hidden).toBe(true);
+
+    toggle.click();
+    expect(app.input?.velocityEnabled).toBe(true);
     expect(requestPermission).toHaveBeenCalledOnce();
   });
 
@@ -85,7 +117,8 @@ describe('adaptive velocity sensitivity control', () => {
     mountAppShell();
     localStorage.setItem(VELOCITY_SENSITIVITY_STORAGE_KEYS.pressure, '83');
     const app = await setupApp();
-    app.input!.setMotionEnabled(true);
+    app.input!._setMotionPermissionState('granted');
+    app.input!.setVelocityEnabled(true);
     app.input!.motionSamples = [{ time: performance.now(), magnitude: 2 }];
     document.querySelector<HTMLButtonElement>('.velocity-debug-toggle')!.click();
 
@@ -93,6 +126,7 @@ describe('adaptive velocity sensitivity control', () => {
 
     const slider = document.querySelector<HTMLInputElement>('.velocity-sensitivity')!;
     expect(document.querySelector('#velocity-sensitivity-label')?.textContent).toBe('Pressure Sensitivity');
+    expect(document.querySelector('.velocity-toggle')?.textContent).toBe('Disable Velocity');
     expect(slider.value).toBe('83');
     expect(document.querySelector('output')?.textContent).toBe('83');
     expect(slider.getAttribute('aria-describedby')).toBe('velocity-sensitivity-description');
@@ -100,5 +134,11 @@ describe('adaptive velocity sensitivity control', () => {
     expect((document.querySelector('.motion-permission-status') as HTMLElement).hidden).toBe(true);
     expect(app.input!.motionEnabled).toBe(false);
     expect(app.input!.motionSamples).toEqual([]);
+
+    document.querySelector<HTMLButtonElement>('.velocity-toggle')!.click();
+    expect(app.input!.velocityEnabled).toBe(false);
+    expect((document.querySelector('.sensitivity-control') as HTMLElement).hidden).toBe(true);
+    app.input!._velocityFromPressure(new PointerEvent('pointerdown', { pressure: 0.8, pointerType: 'pen' }));
+    expect(app.input!.velocityEnabled).toBe(false);
   });
 });
