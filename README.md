@@ -17,7 +17,7 @@ A virtual piano keyboard Progressive Web App (PWA) with realistic **Yamaha U1** 
 - Vanilla TypeScript modules built with Vite (no UI framework).
 - Vitest unit tests and real-browser pointer tests through Playwright/WebKit.
 - Web Audio API for sample-accurate polyphonic playback.
-- Service Worker + Web App Manifest for installable PWA / offline use.
+- Workbox service worker + localized Web App Manifests for installable PWA / offline use.
 - Pure CSS dark theme (no framework).
 
 ## Project Structure
@@ -25,10 +25,10 @@ A virtual piano keyboard Progressive Web App (PWA) with realistic **Yamaha U1** 
 ```
 web/
 ├── index.html              # App shell / entry point
-├── manifest.json           # PWA manifest
-├── sw.js                   # Service worker (offline caching)
+├── build/                  # Content-hashed asset/manifest build plugin
 ├── css/
 │   └── main.css            # Styles (dark theme, responsive)
+├── js/sw.ts               # Workbox service worker (offline caching)
 ├── js/app/
 │   ├── app.ts              # Orchestrator: wires model → input → layout → render → audio
 │   ├── model.ts            # Piano data model (Pitch enum, 88-key generation)
@@ -38,7 +38,9 @@ web/
 │   ├── input.ts            # Pointer / keyboard input controller
 │   └── render.ts           # Keyboard + mini-map rendering
 ├── tests/                  # Unit and browser interaction tests
-└── public/assets/
+└── public/                 # Source assets; emitted with hashes in production
+    ├── manifest.*.json     # Localized PWA manifest templates
+    └── assets/
     ├── icons/              # PWA icons (180 / 192 / 512 px)
     └── yamaha-u1.m4a       # Generated mono AAC-LC audio sprite
 ```
@@ -81,7 +83,9 @@ and adds AAC-frame-aligned silent guards between samples.
 ## PWA / Offline
 
 - Installable on iOS (Add to Home Screen) and Android/desktop browsers that support PWAs.
-- The app shell is cached on first load. The audio sprite is cached on first successful fetch, so the piano works fully offline afterwards.
+- Production JS, CSS, audio, icons, and localized manifests use content-hashed filenames. The build fails if a stable source URL leaks into `dist`.
+- The versioned app shell is precached. The hashed audio sprite is cached on first successful fetch, so the piano works fully offline afterwards.
+- New workers activate immediately, remove legacy `goodiano-*` shell caches, and refresh an open app once. Development mode never registers a worker.
 - If audio storage fails, a non-blocking "retry" prompt appears and the app still runs once online.
 
 ## Browser Support

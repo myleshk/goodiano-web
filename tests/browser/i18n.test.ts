@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
+import { localizedManifestUrls } from 'virtual:goodiano-assets';
 import {
   initializeLocalization,
   setLocalePreference,
@@ -64,6 +65,6 @@ describe('browser localization', () => {
     expect(document.querySelector('button')?.getAttribute('aria-label')).toBe('打开设置');
     expect(document.querySelector('span')?.textContent).toContain('加载失败');
     expect(document.querySelector('meta')?.getAttribute('content')).toContain('虚拟钢琴');
-    expect(document.querySelector('link')?.getAttribute('href')).toBe('./manifest.zh-CN.json');
+    expect(document.querySelector('link')?.getAttribute('href')).toBe(localizedManifestUrls['zh-CN']);
   });
 });

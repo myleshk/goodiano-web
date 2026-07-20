@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { localizedManifestUrls } from 'virtual:goodiano-assets';
 import { GoodianoApp } from '../../js/app/app';
 import { initializeLocalization, setLocalePreference } from '../../js/app/i18n';
 import { VELOCITY_SENSITIVITY_STORAGE_KEYS } from '../../js/app/velocity-settings';
@@ -206,7 +207,7 @@ describe('adaptive velocity sensitivity control', () => {
     expect(document.querySelector('.velocity-toggle')?.textContent).toBe('啟用力度感應');
     expect(document.querySelector('.motion-permission-feedback')?.textContent).toContain('拒絕');
     expect(document.querySelector('meta[name="description"]')?.getAttribute('content')).toContain('虛擬鋼琴');
-    expect(document.querySelector('link[rel="manifest"]')?.getAttribute('href')).toBe('./manifest.zh-TW.json');
+    expect(document.querySelector('link[rel="manifest"]')?.getAttribute('href')).toBe(localizedManifestUrls['zh-TW']);
     expect(localStorage.getItem('goodiano.locale.v1')).toBe('zh-TW');
   });
 });

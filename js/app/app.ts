@@ -14,6 +14,8 @@ import { loadSensitivity, saveSensitivity } from './velocity-settings';
 import { KeyboardRenderer } from './render';
 import type { KeyboardLayout } from './keyboard';
 import type { PianoKey } from './model';
+import { audioSpriteUrl } from 'virtual:goodiano-assets';
+import { registerServiceWorker } from './service-worker';
 import {
   getLocale,
   initializeLocalization,
@@ -161,7 +163,7 @@ class GoodianoApp {
   async _loadAudio() {
     try {
       await this.audio.loadSampleLibrary(
-        'assets/yamaha-u1.m4a',
+        audioSpriteUrl,
         YAMAHA_U1_ZONES,
         progress => this._updateLoadingProgress(progress),
       );
@@ -433,6 +435,7 @@ class GoodianoApp {
 // Bootstrap
 initializeLocalization();
 translateDocument();
+registerServiceWorker();
 const app = new GoodianoApp();
 
 // Bootstrap immediately so the shell and audio can be cached before the

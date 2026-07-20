@@ -1,5 +1,7 @@
 /** Zero-dependency localization for the Goodiano web app. */
 
+import { localizedManifestUrls } from 'virtual:goodiano-assets';
+
 export type SupportedLocale = 'en' | 'zh-CN' | 'zh-TW';
 export type LocalePreference = 'system' | SupportedLocale;
 
@@ -223,7 +225,7 @@ export function translateDocument(doc: Document = document): void {
   doc.documentElement.lang = locale;
   doc.title = 'Goodiano';
   doc.querySelector<HTMLMetaElement>('meta[name="description"]')?.setAttribute('content', t('meta.description'));
-  doc.querySelector<HTMLLinkElement>('link[rel="manifest"]')?.setAttribute('href', `./manifest.${locale}.json`);
+  doc.querySelector<HTMLLinkElement>('link[rel="manifest"]')?.setAttribute('href', localizedManifestUrls[locale]);
   doc.querySelectorAll<HTMLElement>('[data-i18n]').forEach(element => {
     const key = element.dataset.i18n as TranslationKey;
     if (key in en) element.textContent = t(key);

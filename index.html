@@ -16,8 +16,7 @@
   <link rel="icon" type="image/png" sizes="512x512" href="assets/icons/icon-512.png">
   <link rel="apple-touch-icon" href="assets/icons/icon-180.png">
 
-  <!-- Keep a versioned URL so an older service worker cannot serve stale CSS. -->
-  <link rel="stylesheet" href="css/main.css?v=0-1-0">
+  <link rel="stylesheet" href="css/main.css">
 </head>
 <body>
   <div class="app">
@@ -83,15 +82,6 @@
     <div class="velocity-debug-raw">pressure -- &nbsp;·&nbsp; motion Δ --</div>
   </aside>
 
-  <script type="module" src="./js/app/app.ts?v=0-1-0"></script>
-
-  <script>
-    // Register service worker
-    if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('./sw.js?v=0-1-0')
-        .then(registration => registration.update())
-        .catch(() => {});
-    }
-  </script>
+  <script type="module" src="./js/app/app.ts"></script>
 </body>
 </html>
