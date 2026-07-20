@@ -337,6 +337,84 @@ html, body {
   text-align: right;
 }
 
+/* --- PWA install guidance --- */
+.install-promotion {
+  position: fixed;
+  left: calc(env(safe-area-inset-left, 0px) + 12px);
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 12px);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  width: min(440px, calc(100vw - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px) - 24px));
+  padding: 12px 42px 12px 14px;
+  border: 1px solid rgba(255,255,255,0.24);
+  border-radius: 14px;
+  color: rgba(255,255,255,0.94);
+  background: rgba(18,18,18,0.92);
+  box-shadow: 0 10px 34px rgba(0,0,0,0.5);
+  z-index: 1050;
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+}
+
+.install-promotion[hidden] { display: none; }
+.install-promotion-copy { min-width: 0; }
+
+.install-promotion h2 {
+  margin: 0 0 3px;
+  font-size: 14px;
+  line-height: 1.2;
+}
+
+.install-promotion p,
+.install-ios-steps {
+  color: rgba(255,255,255,0.68);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.install-ios-steps { margin: 3px 0 0 18px; }
+
+.install-promotion-primary {
+  min-height: 34px;
+  padding: 7px 12px;
+  border: 0;
+  border-radius: 8px;
+  color: #111;
+  background: #fff;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.install-promotion-dismiss {
+  position: absolute;
+  top: 5px;
+  right: 6px;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  color: rgba(255,255,255,0.62);
+  background: transparent;
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.install-promotion button:focus-visible {
+  outline: 2px solid #7db8ff;
+  outline-offset: 2px;
+}
+
+@media (max-width: 520px) {
+  .install-promotion {
+    right: calc(env(safe-area-inset-right, 0px) + 12px);
+    width: auto;
+  }
+}
+
 
 /* --- Keyboard Area --- */
 .keyboard-area {

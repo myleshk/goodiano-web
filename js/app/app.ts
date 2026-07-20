@@ -16,6 +16,7 @@ import type { KeyboardLayout } from './keyboard';
 import type { PianoKey } from './model';
 import { audioSpriteUrl } from 'virtual:goodiano-assets';
 import { registerServiceWorker } from './service-worker';
+import { InstallPromotionController } from './install-promotion';
 import {
   getLocale,
   initializeLocalization,
@@ -47,8 +48,10 @@ class GoodianoApp {
   private _loadingMessage: TranslationKey = 'loading.initial';
   private _lastVelocityDebug: { key: InputKey; velocity: number } | null = null;
   private _resizeObserver: ResizeObserver | null = null;
+  private readonly installPromotion: InstallPromotionController;
 
-  constructor() {
+  constructor(installPromotion: InstallPromotionController = new InstallPromotionController()) {
+    this.installPromotion = installPromotion;
     this.keys = generateFullPianoKeys();
     this.layout = computeLayout(this.keys);
     this.audio = new PianoAudioEngine();
@@ -185,7 +188,10 @@ class GoodianoApp {
       this.loadingOverlay.classList.add('hidden');
       setTimeout(() => {
         if (this.loadingOverlay) this.loadingOverlay.style.display = 'none';
+        this.installPromotion.markAppReady();
       }, 500);
+    } else {
+      this.installPromotion.markAppReady();
     }
   }
 
@@ -436,7 +442,9 @@ class GoodianoApp {
 initializeLocalization();
 translateDocument();
 registerServiceWorker();
-const app = new GoodianoApp();
+const installPromotion = new InstallPromotionController();
+installPromotion.init();
+const app = new GoodianoApp(installPromotion);
 
 // Bootstrap immediately so the shell and audio can be cached before the
 // first interaction. A gesture is used only to resume the AudioContext.

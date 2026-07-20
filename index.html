@@ -70,6 +70,7 @@
     <p id="motion-permission-feedback" class="motion-permission-feedback" role="status" hidden></p>
     <div class="motion-permission-status" hidden>motion permission: unknown</div>
     <button class="settings-action velocity-debug-toggle" type="button" data-i18n="debug.show">Show Debug</button>
+    <button class="settings-action install-settings-button" type="button" data-i18n="install.settingsAction" hidden>Install Goodiano</button>
     <button class="settings-action app-reload-button" type="button" data-i18n="actions.reload">Reload App</button>
     <div class="settings-version">Goodiano · v0.2.0</div>
   </section>
@@ -80,6 +81,25 @@
     <div class="velocity-debug-track"><div class="velocity-debug-fill"></div></div>
     <div class="velocity-debug-source">source: --</div>
     <div class="velocity-debug-raw">pressure -- &nbsp;·&nbsp; motion Δ --</div>
+  </aside>
+
+  <aside class="install-promotion" role="region" aria-labelledby="install-promotion-title" hidden>
+    <button class="install-promotion-dismiss" type="button" data-i18n-aria-label="install.dismiss" aria-label="Not now">&times;</button>
+    <div class="install-promotion-copy">
+      <h2 id="install-promotion-title" data-i18n="install.title">Install Goodiano</h2>
+      <p class="install-promotion-benefits" data-i18n="install.benefits">Play full screen, keep Goodiano on your Home Screen, and use it offline.</p>
+      <div class="install-ios-instructions" hidden>
+        <p class="install-ios-safari-intro" data-i18n="install.iosIntro">In Safari:</p>
+        <ol class="install-ios-steps">
+          <li data-i18n="install.iosStepShare">Tap Share.</li>
+          <li data-i18n="install.iosStepAddHome">Tap Add to Home Screen.</li>
+          <li data-i18n="install.iosStepOpenAsApp">Turn on Open as Web App.</li>
+          <li data-i18n="install.iosStepAdd">Tap Add.</li>
+        </ol>
+        <p class="install-ios-browser-fallback" data-i18n="install.iosOpenSafari" hidden>Open this page in Safari first, then add it to your Home Screen.</p>
+      </div>
+    </div>
+    <button class="install-promotion-primary" type="button" data-i18n="install.installAction">Install</button>
   </aside>
 
   <script type="module" src="./js/app/app.ts"></script>
