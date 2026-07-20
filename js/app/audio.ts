@@ -22,6 +22,19 @@ interface SampleZone {
 interface NoteRequest { keyId: string; midiNote: number; velocity: number }
 interface ActiveNote { source: AudioBufferSourceNode; gain: GainNode; midiNote: number }
 interface WebKitAudioWindow extends Window { webkitAudioContext?: typeof AudioContext }
+interface ExperimentalAudioSession { type: 'playback' }
+interface NavigatorWithAudioSession extends Navigator { audioSession?: ExperimentalAudioSession }
+
+function configurePlaybackAudioSession(): void {
+  try {
+    if (typeof navigator === 'undefined') return;
+    const audioSession = (navigator as NavigatorWithAudioSession).audioSession;
+    if (audioSession) audioSession.type = 'playback';
+  } catch (_) {
+    // The experimental API may reject assignment. Web Audio
+    // should continue to initialize with the browser's default session type.
+  }
+}
 
 class PianoAudioEngine {
   ctx: AudioContext | null = null;
@@ -45,6 +58,7 @@ class PianoAudioEngine {
       this.state = 'error';
       throw new Error('Web Audio is unavailable in this browser');
     }
+    configurePlaybackAudioSession();
     this.ctx = new AudioContextClass();
     this.masterGain = this.ctx.createGain();
     this.masterGain.gain.value = MASTER_GAIN;
@@ -58,7 +72,10 @@ class PianoAudioEngine {
     const ctx = await this.init();
     if (ctx.state === 'closed') throw new Error('AudioContext is closed');
     const wasRunning = ctx.state === 'running';
-    if (ctx.state !== 'running') await ctx.resume();
+    if (ctx.state !== 'running') {
+      configurePlaybackAudioSession();
+      await ctx.resume();
+    }
     if (ctx.state === 'running') {
       this.state = this.loaded ? 'ready' : 'loading';
       // Safari can suspend a context while fingers are still down. Rebuild

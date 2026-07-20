@@ -150,6 +150,44 @@ describe('PianoAudioEngine loading', () => {
 });
 
 describe('PianoAudioEngine playback', () => {
+  it('selects playback mode before constructing the AudioContext', async () => {
+    const events: string[] = [];
+    const audioSession = {
+      set type(value: string) { events.push(`session:${value}`); },
+    };
+    class OrderedAudioContext extends FakeAudioContext {
+      constructor() {
+        super();
+        events.push('context');
+      }
+    }
+    vi.stubGlobal('navigator', { audioSession });
+    vi.stubGlobal('window', { AudioContext: OrderedAudioContext });
+
+    await new PianoAudioEngine().init();
+
+    expect(events).toEqual(['session:playback', 'context']);
+  });
+
+  it('initializes when the Audio Session API is unavailable', async () => {
+    vi.stubGlobal('navigator', {});
+    vi.stubGlobal('window', { AudioContext: FakeAudioContext });
+
+    const engine = new PianoAudioEngine();
+    await expect(engine.init()).resolves.toBe(engine.ctx);
+  });
+
+  it('initializes when assigning playback mode throws', async () => {
+    const audioSession = {
+      set type(_value: string) { throw new Error('unsupported session type'); },
+    };
+    vi.stubGlobal('navigator', { audioSession });
+    vi.stubGlobal('window', { AudioContext: FakeAudioContext });
+
+    const engine = new PianoAudioEngine();
+    await expect(engine.init()).resolves.toBe(engine.ctx);
+  });
+
   it('starts low, middle, and high notes from the shared buffer at zone boundaries', () => {
     const { engine, createdSources } = readyEngine(YAMAHA_U1_ZONES);
     for (const midiNote of [21, 60, 108]) engine.noteOn(String(midiNote), midiNote);
@@ -192,10 +230,22 @@ describe('PianoAudioEngine playback', () => {
   });
 
   it('resumes a suspended context from a gesture', async () => {
-    vi.stubGlobal('window', { AudioContext: FakeAudioContext });
+    const events: string[] = [];
+    const audioSession = {
+      set type(value: string) { events.push(`session:${value}`); },
+    };
+    class OrderedAudioContext extends FakeAudioContext {
+      async resume() {
+        events.push('resume');
+        await super.resume();
+      }
+    }
+    vi.stubGlobal('navigator', { audioSession });
+    vi.stubGlobal('window', { AudioContext: OrderedAudioContext });
     const engine = new PianoAudioEngine();
     expect(await engine.ensureRunning()).toBe(true);
     expect(engine.ctx?.state).toBe('running');
+    expect(events).toEqual(['session:playback', 'session:playback', 'resume']);
   });
 
   it('fades and stops a released voice before cleaning up on ended', () => {

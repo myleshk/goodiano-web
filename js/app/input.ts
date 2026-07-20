@@ -9,6 +9,7 @@ type VelocityInputMode = 'motion' | 'pressure';
 type MotionPermissionState = 'disabled' | 'unknown' | 'requesting' | 'granted' | 'denied' | 'unavailable';
 // Calibrate the accelerometer impulse to the observed motion-delta range.
 const MOTION_FULL_SCALE = 1.4;
+const MOTION_FULL_SCALE_AT_MAX_SENSITIVITY = 0.5;
 interface InputKey extends Partial<PianoKey> {
   id: string;
   velocity?: number;
@@ -339,7 +340,11 @@ class InputController {
   }
 
   private _sensitivityGain(mode: VelocityInputMode): number {
-    return 2 ** ((this.sensitivities[mode] - 50) / 50);
+    const position = (this.sensitivities[mode] - 50) / 50;
+    const maxGain = mode === 'motion'
+      ? MOTION_FULL_SCALE / MOTION_FULL_SCALE_AT_MAX_SENSITIVITY
+      : 2;
+    return (position >= 0 ? maxGain : 2) ** position;
   }
 
   private _detectPressureInput(): void {

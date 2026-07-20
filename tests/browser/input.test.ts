@@ -159,15 +159,15 @@ describe('pointer input', () => {
       const now = performance.now();
       input.motionSamples = [
         { time: now - 150, magnitude: 1 },
-        { time: now - 10, magnitude: 1.7 },
+        { time: now - 10, magnitude: 1.5 },
       ];
       container.dispatchEvent(pointer('pointerdown', 1, 20));
       input.destroy();
       return velocities[0];
     };
 
-    expect(values(50)).toBe(81);
-    expect(values(1)).toBe(58);
+    expect(values(50)).toBe(68);
+    expect(values(1)).toBe(52);
     expect(values(100)).toBe(127);
   });
 
