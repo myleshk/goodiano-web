@@ -23,10 +23,14 @@ export function versionedAssetsPlugin(): Plugin {
   });
   const audioSource = publicFile('assets/yamaha-u1.m4a');
   const audioFileName = `assets/yamaha-u1-${digest(audioSource)}.m4a`;
+  const manifestBase = JSON.parse(publicFile('manifest.base.json').toString('utf8')) as {
+    icons: Array<{ src: string; sizes: string; type: string; purpose?: string }>;
+  };
   const manifests = Object.fromEntries((['en', 'zh-CN', 'zh-TW'] as const).map(locale => {
-    const manifest = JSON.parse(publicFile(`manifest.${locale}.json`).toString('utf8')) as {
-      icons: Array<{ src: string; sizes: string; type: string; purpose?: string }>;
+    const localeOverrides = JSON.parse(publicFile(`manifest.${locale}.json`).toString('utf8')) as {
+      lang: string; description: string;
     };
+    const manifest = { ...manifestBase, ...localeOverrides };
     manifest.icons = manifest.icons.map(icon => {
       const size = Number.parseInt(icon.sizes, 10);
       const emittedIcon = icons.find(candidate => candidate.size === size);
