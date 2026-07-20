@@ -15,6 +15,11 @@ function publicFile(path: string): Buffer {
   return readFileSync(new URL(`../public/${path}`, import.meta.url));
 }
 
+// Single source of truth for the app version: package.json.
+const appVersion = (JSON.parse(readFileSync(new URL('../package.json', import.meta.url)).toString('utf8')) as {
+  version: string;
+}).version;
+
 export function versionedAssetsPlugin(): Plugin {
   let productionBuild = false;
   const icons = ([180, 192, 512] as const).map(size => {
@@ -53,6 +58,7 @@ export function versionedAssetsPlugin(): Plugin {
       if (id !== RESOLVED_VIRTUAL_ID) return undefined;
       if (this.environment.mode === 'dev') {
         return `
+          export const version = ${JSON.stringify(appVersion)};
           export const audioSpriteUrl = '/assets/yamaha-u1.m4a';
           export const localizedManifestUrls = {
             en: '/manifest.en.json',
@@ -64,6 +70,7 @@ export function versionedAssetsPlugin(): Plugin {
       const assetBase = 'new URL(/* @vite-ignore */ ".", import.meta.url)';
       return `
         const assetBase = ${assetBase};
+        export const version = ${JSON.stringify(appVersion)};
         export const audioSpriteUrl = new URL(${JSON.stringify(audioFileName.split('/').pop())}, assetBase).href;
         export const localizedManifestUrls = ${JSON.stringify(Object.fromEntries(
           Object.entries(manifests).map(([locale, manifest]) => [locale, manifest.fileName.split('/').pop()]),

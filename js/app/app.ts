@@ -14,7 +14,7 @@ import { loadSensitivity, saveSensitivity } from './velocity-settings';
 import { KeyboardRenderer } from './render';
 import type { KeyboardLayout } from './keyboard';
 import type { PianoKey } from './model';
-import { audioSpriteUrl } from 'virtual:goodiano-assets';
+import { audioSpriteUrl, version } from 'virtual:goodiano-assets';
 import { registerServiceWorker, RELOAD_MARKER } from './service-worker';
 import { InstallPromotionController } from './install-promotion';
 import {
@@ -66,6 +66,9 @@ class GoodianoApp {
     this.loadingOverlay = document.querySelector('.loading-overlay');
     this.velocityDebug = document.querySelector('.velocity-debug');
     this.settingsPanel = document.querySelector('.settings-panel');
+    // Render the version from the single source of truth (package.json).
+    const versionEl = document.querySelector<HTMLElement>('.app-version');
+    if (versionEl) versionEl.textContent = `Goodiano · v${version}`;
     this._setupLocaleControl();
     document.querySelector<HTMLButtonElement>('.settings-toggle')?.addEventListener('click', () => {
       if (this.settingsPanel) this.settingsPanel.hidden = !this.settingsPanel.hidden;
