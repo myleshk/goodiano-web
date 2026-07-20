@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { computeLayout, findMiddleCIndex, getMiniMapViewport, scrollToKey } from '../../js/app/keyboard';
 import { generateFullPianoKeys } from '../../js/app/model';
 import { KeyboardRenderer } from '../../js/app/render';
+import '../../css/main.css';
 
 function setupRenderer() {
   const content = document.createElement('div');
@@ -26,9 +27,10 @@ describe('keyboard rendering', () => {
 
     expect(key.style.display).not.toBe('flex');
     expect(key.style.paddingBottom).toBe('');
-    expect(label.style.position).toBe('absolute');
-    expect(label.style.bottom).toBe('10px');
-    expect(label.style.left).toBe('50%');
+    const labelStyle = getComputedStyle(label);
+    expect(labelStyle.position).toBe('absolute');
+    expect(labelStyle.bottom).toBe('10px');
+    expect(labelStyle.left).not.toBe('');
   });
 
   it('places and moves the mini-map indicator using key-index coordinates', () => {

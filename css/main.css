@@ -447,6 +447,7 @@ html, body {
   height: 100%;
   position: relative;
   min-width: 100%;
+  background-color: #111;
 }
 
 /* --- Key Press Animation --- */
@@ -461,6 +462,105 @@ html, body {
 .key-white:active,
 .key-black:active {
   transition: none;
+}
+
+/* --- Keyboard keys (static styles migrated from render.ts) --- */
+.keyboard-white-row {
+  display: flex;
+  height: 100%;
+  position: relative;
+}
+
+.keyboard-black-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 60%;
+  pointer-events: none;
+}
+
+.key-white {
+  flex: 0 0 auto;
+  position: relative;
+  cursor: pointer;
+  border-radius: 0 0 6px 6px;
+  background-color: #fff;
+  border: 1px solid rgba(128, 128, 128, 0.25);
+  border-top: none;
+  user-select: none;
+  -webkit-user-select: none;
+  transition: transform 0.12s cubic-bezier(0.25, 0.1, 0.25, 1), background-color 0.08s ease;
+}
+
+.key-white .key-label {
+  font-size: 18px;
+  color: rgba(128, 128, 128, 0.5);
+  font-family: system-ui, -apple-system, sans-serif;
+  pointer-events: none;
+  position: absolute;
+  left: 50%;
+  bottom: 10px;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+
+.key-black {
+  position: absolute;
+  background-color: #000;
+  border-radius: 0 0 6px 6px;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  z-index: 2;
+  pointer-events: auto;
+  transition: transform 0.12s cubic-bezier(0.25, 0.1, 0.25, 1), background-color 0.08s ease;
+}
+
+.key-white.pressed {
+  background-color: #f0f0f0;
+  transform: scaleY(0.98);
+}
+
+.key-black.pressed {
+  background-color: #262626;
+  transform: scaleY(0.97);
+}
+
+/* --- Mini-map (static styles migrated from render.ts) --- */
+.minimap {
+  display: flex;
+  height: 48px;
+  width: 100%;
+  position: relative;
+  background-color: #1a1a1a;
+  border-radius: 0;
+  overflow: hidden;
+}
+
+.minimap-seg {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+}
+
+.minimap-seg-label {
+  color: #fff;
+  font-size: 18px;
+  font-weight: 600;
+  font-family: system-ui, -apple-system, sans-serif;
+}
+
+.minimap-indicator {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  border: 2px solid rgba(255, 255, 255, 0.8);
+  border-radius: 3px;
+  pointer-events: none;
+  box-sizing: border-box;
+  background-color: rgba(255, 255, 255, 0.05);
 }
 
 /* --- Responsive: Portrait (default for phone) --- */

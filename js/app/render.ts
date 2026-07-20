@@ -46,18 +46,11 @@ class KeyboardRenderer {
     this.keyboardEl.innerHTML = '';
     this.keyElements.clear();
 
-    // Background for keyboard area
-    this.keyboardEl.style.position = 'relative';
-    this.keyboardEl.style.backgroundColor = '#111';
-    this.keyboardEl.style.height = '100%';
-    this.keyboardEl.style.width = '100%';
+    // Background for keyboard area (static styles live in css/main.css)
 
     // White keys row
     const whiteRow = document.createElement('div');
     whiteRow.className = 'keyboard-white-row';
-    whiteRow.style.display = 'flex';
-    whiteRow.style.height = '100%';
-    whiteRow.style.position = 'relative';
 
     for (const wk of layout.whiteKeys) {
       const el = this._createWhiteKey(wk);
@@ -68,12 +61,6 @@ class KeyboardRenderer {
     // Black keys overlay
     const blackLayer = document.createElement('div');
     blackLayer.className = 'keyboard-black-layer';
-    blackLayer.style.position = 'absolute';
-    blackLayer.style.top = '0';
-    blackLayer.style.left = '0';
-    blackLayer.style.width = '100%';
-    blackLayer.style.height = '60%';
-    blackLayer.style.pointerEvents = 'none';
 
     for (const bk of layout.blackKeys) {
       const el = this._createBlackKey(bk, layout);
@@ -92,29 +79,10 @@ class KeyboardRenderer {
     el.className = 'key-white';
     el.dataset.key = key.id;
     el.dataset.midi = String(key.midiNote);
-    el.style.flex = '0 0 auto';
-    el.style.position = 'relative';
-    el.style.cursor = 'pointer';
-    el.style.borderRadius = '0 0 6px 6px';
-    el.style.backgroundColor = '#fff';
-    el.style.border = '1px solid rgba(128,128,128,0.25)';
-    el.style.borderTop = 'none';
-    el.style.userSelect = 'none';
-    el.style.webkitUserSelect = 'none';
-    el.style.transition = 'transform 0.12s cubic-bezier(0.25, 0.1, 0.25, 1), background-color 0.08s ease';
 
     const label = document.createElement('span');
     label.className = 'key-label';
     label.textContent = key.name;
-    label.style.fontSize = '10px';
-    label.style.color = 'rgba(128,128,128,0.5)';
-    label.style.fontFamily = 'system-ui, -apple-system, sans-serif';
-    label.style.pointerEvents = 'none';
-    label.style.position = 'absolute';
-    label.style.left = '50%';
-    label.style.bottom = '10px';
-    label.style.transform = 'translateX(-50%)';
-    label.style.whiteSpace = 'nowrap';
 
     el.appendChild(label);
     return el;
@@ -125,17 +93,8 @@ class KeyboardRenderer {
     el.className = 'key-black';
     el.dataset.key = key.id;
     el.dataset.midi = String(key.midiNote);
-    el.style.position = 'absolute';
-    el.style.backgroundColor = '#000';
-    el.style.borderRadius = '0 0 6px 6px';
-    el.style.cursor = 'pointer';
-    el.style.userSelect = 'none';
-    el.style.webkitUserSelect = 'none';
-    el.style.zIndex = '2';
-    el.style.pointerEvents = 'auto';
-    el.style.transition = 'transform 0.12s cubic-bezier(0.25, 0.1, 0.25, 1), background-color 0.08s ease';
 
-    // Position will be set in _updateSizes
+    // Position/size will be set in _updateSizes
     return el;
   }
 
@@ -178,24 +137,7 @@ class KeyboardRenderer {
   setPressed(keyId: string, pressed: boolean): void {
     const el = this.keyElements.get(keyId);
     if (!el) return;
-
-    if (pressed) {
-      if (el.classList.contains('key-white')) {
-        el.style.backgroundColor = '#f0f0f0';
-        el.style.transform = 'scaleY(0.98)';
-      } else {
-        el.style.backgroundColor = '#262626';
-        el.style.transform = 'scaleY(0.97)';
-      }
-    } else {
-      if (el.classList.contains('key-white')) {
-        el.style.backgroundColor = '#fff';
-        el.style.transform = 'scaleY(1)';
-      } else {
-        el.style.backgroundColor = '#000';
-        el.style.transform = 'scaleY(1)';
-      }
-    }
+    el.classList.toggle('pressed', pressed);
   }
 
   /**
@@ -207,13 +149,6 @@ class KeyboardRenderer {
 
     const map = document.createElement('div');
     map.className = 'minimap';
-    map.style.display = 'flex';
-    map.style.height = '48px';
-    map.style.width = '100%';
-    map.style.position = 'relative';
-    map.style.backgroundColor = '#1a1a1a';
-    map.style.borderRadius = '0';
-    map.style.overflow = 'hidden';
 
     const { octaveBlocks } = this.layout;
 
@@ -224,19 +159,13 @@ class KeyboardRenderer {
       const widthPct = (((block.widthMultiplier || 1) / totalUnits) * 100).toFixed(4);
 
       const seg = document.createElement('div');
+      seg.className = 'minimap-seg';
       seg.style.flex = `0 0 ${widthPct}%`;
       seg.style.backgroundColor = color;
-      seg.style.display = 'flex';
-      seg.style.alignItems = 'center';
-      seg.style.justifyContent = 'center';
-      seg.style.position = 'relative';
 
       const label = document.createElement('span');
+      label.className = 'minimap-seg-label';
       label.textContent = `C${block.octave}`;
-      label.style.color = '#fff';
-      label.style.fontSize = '10px';
-      label.style.fontWeight = '600';
-      label.style.fontFamily = 'system-ui, -apple-system, sans-serif';
       seg.appendChild(label);
 
       map.appendChild(seg);
@@ -245,14 +174,6 @@ class KeyboardRenderer {
     // Viewport indicator overlay
     const indicator = document.createElement('div');
     indicator.className = 'minimap-indicator';
-    indicator.style.position = 'absolute';
-    indicator.style.top = '0';
-    indicator.style.height = '100%';
-    indicator.style.border = '2px solid rgba(255,255,255,0.8)';
-    indicator.style.borderRadius = '3px';
-    indicator.style.pointerEvents = 'none';
-    indicator.style.boxSizing = 'border-box';
-    indicator.style.backgroundColor = 'rgba(255,255,255,0.05)';
     map.appendChild(indicator);
 
     this.miniMapEl.appendChild(map);
