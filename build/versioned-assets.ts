@@ -23,6 +23,13 @@ export function versionedAssetsPlugin(): Plugin {
   });
   const audioSource = publicFile('assets/yamaha-u1.m4a');
   const audioFileName = `assets/yamaha-u1-${digest(audioSource)}.m4a`;
+  // Static files served verbatim at the site root (e.g. domain verification
+  // tokens). They must keep their exact name and content, so they are emitted
+  // unhashed straight into the dist root.
+  const rootFiles = ['7732954a1dfbfcce60e02ba7fd801701.txt'].map(fileName => ({
+    fileName,
+    source: publicFile(fileName),
+  }));
   const manifests = Object.fromEntries((['en', 'zh-CN', 'zh-TW'] as const).map(locale => {
     const manifest = JSON.parse(publicFile(`manifest.${locale}.json`).toString('utf8')) as {
       icons: Array<{ src: string; sizes: string; type: string; purpose?: string }>;
@@ -75,6 +82,9 @@ export function versionedAssetsPlugin(): Plugin {
       this.emitFile({ type: 'asset', fileName: audioFileName, source: audioSource });
       Object.values(manifests).forEach(manifest => {
         this.emitFile({ type: 'asset', fileName: manifest.fileName, source: manifest.source });
+      });
+      rootFiles.forEach(file => {
+        this.emitFile({ type: 'asset', fileName: file.fileName, source: file.source });
       });
     },
     transformIndexHtml: {
