@@ -1,12 +1,14 @@
 import { defineConfig } from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
 import { versionedAssetsPlugin } from './build/versioned-assets';
+import { devCleanupServiceWorker } from './build/dev-cleanup-sw-plugin';
 
 export default defineConfig({
   base: './',
   publicDir: 'public',
   plugins: [
     versionedAssetsPlugin(),
+    devCleanupServiceWorker(),
     VitePWA({
       strategies: 'injectManifest',
       srcDir: 'js',

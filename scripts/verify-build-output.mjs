@@ -45,5 +45,7 @@ assert(audioFile, 'missing hashed audio sprite');
 assert(!worker.includes(audioFile), 'audio sprite must remain lazy rather than precached');
 assert(worker.includes('goodiano-audio-v1'), 'audio runtime cache is missing');
 assert(worker.includes("startsWith(`goodiano-`)") || worker.includes('startsWith("goodiano-")'), 'legacy cache cleanup is missing');
+assert(!worker.includes('removes every Cache Storage entry'), 'dev cleanup worker leaked into production sw.js');
+assert(!files.some(file => file.includes('dev-cleanup-sw')), 'dev cleanup worker artifact leaked into dist');
 
 console.log(`Verified ${immutableAssets.length} content-hashed production assets.`);

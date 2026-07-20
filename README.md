@@ -85,7 +85,7 @@ and adds AAC-frame-aligned silent guards between samples.
 - Installable on iOS (Add to Home Screen) and Android/desktop browsers that support PWAs.
 - Production JS, CSS, audio, icons, and localized manifests use content-hashed filenames. The build fails if a stable source URL leaks into `dist`.
 - The versioned app shell is precached. The hashed audio sprite is cached on first successful fetch, so the piano works fully offline afterwards.
-- New workers activate immediately, remove legacy `goodiano-*` shell caches, and refresh an open app once. Development mode never registers a worker.
+- New workers activate immediately, remove legacy `goodiano-*` shell caches, and refresh an open app once. Development mode never precaches source URLs; on the dedicated development origin it instead serves a one-shot cleanup worker that removes legacy service workers and caches, reloads controlled pages, then unregisters itself.
 - If audio storage fails, a non-blocking "retry" prompt appears and the app still runs once online.
 
 ## Browser Support

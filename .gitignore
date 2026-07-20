@@ -6,6 +6,7 @@ dist/
 build/**
 # versioned-assets.ts is source (a Vite plugin), not generated output
 !build/versioned-assets.ts
+!build/dev-cleanup-sw-plugin.ts
 
 # OS files
 .DS_Store

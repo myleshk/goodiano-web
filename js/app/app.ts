@@ -15,7 +15,7 @@ import { KeyboardRenderer } from './render';
 import type { KeyboardLayout } from './keyboard';
 import type { PianoKey } from './model';
 import { audioSpriteUrl } from 'virtual:goodiano-assets';
-import { registerServiceWorker } from './service-worker';
+import { registerServiceWorker, RELOAD_MARKER } from './service-worker';
 import { InstallPromotionController } from './install-promotion';
 import {
   getLocale,
@@ -84,6 +84,8 @@ class GoodianoApp {
       if (event.data?.type === 'CACHE_ERROR' && this.loadingOverlay) {
         this._setLoadingMessage('loading.cacheFailed');
         this.loadingOverlay.classList.add('recoverable-error');
+      } else if (event.data?.type === 'GOODIANO_DEV_SW_CLEANUP') {
+        this.reloadOnce();
       }
     });
 
@@ -381,6 +383,15 @@ class GoodianoApp {
     const url = new URL(window.location.href);
     url.searchParams.set('reload', String(Date.now()));
     window.location.replace(url.href);
+  }
+
+  /** Reload at most once per session to avoid cleanup-driven reload loops. */
+  reloadOnce(): void {
+    try {
+      if (sessionStorage.getItem(RELOAD_MARKER) === '1') return;
+      sessionStorage.setItem(RELOAD_MARKER, '1');
+    } catch (_) { /* Best effort. */ }
+    window.location.reload();
   }
 
   _handleScroll(offset: number): void {
