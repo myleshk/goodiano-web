@@ -5,11 +5,11 @@ A virtual piano keyboard Progressive Web App (PWA) with realistic **Yamaha U1** 
 ## Features
 
 - **88-key piano** — Full A0 (MIDI 21) through C8 (MIDI 108) range.
-- **Realistic sound** — Polyphonic playback from a Yamaha U1 SoundFont (`.sf2`) parsed and rendered with the Web Audio API.
+- **Realistic sound** — Polyphonic playback from a compact Yamaha U1 AAC audio sprite decoded by the Web Audio API.
 - **Mobile-first** — Optimized for iPhone/iOS: notch & status-bar safe areas, `standalone` PWA mode, touch gestures.
 - **Responsive layout** — Adapts between portrait (≥10 visible white keys) and landscape (55px logical keys).
 - **Mini-map navigator** — Quickly jump across the keyboard.
-- **Offline support** — A service worker caches the app shell and lazily caches the SoundFont for offline play.
+- **Offline support** — A service worker caches the app shell and lazily caches the audio sprite for offline play.
 - **Keyboard & pointer input** — Touch, mouse, and computer-keyboard input with velocity support.
 
 ## Tech Stack
@@ -32,14 +32,15 @@ web/
 ├── js/app/
 │   ├── app.ts              # Orchestrator: wires model → input → layout → render → audio
 │   ├── model.ts            # Piano data model (Pitch enum, 88-key generation)
-│   ├── audio.ts            # SF2 parser + Web Audio playback engine
+│   ├── audio.ts            # Audio-sprite loader + Web Audio playback engine
+│   ├── sample-zones.ts     # Generated sample offsets and pitch mappings
 │   ├── keyboard.ts         # Layout computation & hit-testing
 │   ├── input.ts            # Pointer / keyboard input controller
 │   └── render.ts           # Keyboard + mini-map rendering
 ├── tests/                  # Unit and browser interaction tests
 └── public/assets/
     ├── icons/              # PWA icons (180 / 192 / 512 px)
-    └── yahama_U1.sf2       # Yamaha U1 SoundFont (audio samples)
+    └── yamaha-u1.m4a       # Generated mono AAC-LC audio sprite
 ```
 
 ## Getting Started
@@ -63,13 +64,25 @@ npm run build
 npm run preview
 ```
 
+The generated audio and zone metadata are committed, so normal development and
+CI do not need FFmpeg. To regenerate them, install FFmpeg and supply the
+original SoundFont explicitly (the source SF2 is not deployed):
+
+```bash
+npm run audio:generate -- /path/to/yamaha-u1.sf2
+```
+
+The conversion selects the same 14 left-channel zones reached by the original
+player's ordered first-match lookup, retains each complete recorded sample,
+and adds AAC-frame-aligned silent guards between samples.
+
 > **Note:** On iOS, audio only starts after the first tap/gesture (browser autoplay policy). The app handles this automatically — just tap a key to begin.
 
 ## PWA / Offline
 
 - Installable on iOS (Add to Home Screen) and Android/desktop browsers that support PWAs.
-- The app shell is cached on first load. The SoundFont is cached on first successful fetch, so the piano works fully offline afterwards.
-- If SoundFont storage fails, a non-blocking "retry" prompt appears and the app still runs once online.
+- The app shell is cached on first load. The audio sprite is cached on first successful fetch, so the piano works fully offline afterwards.
+- If audio storage fails, a non-blocking "retry" prompt appears and the app still runs once online.
 
 ## Browser Support
 

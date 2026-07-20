@@ -6,6 +6,7 @@
 
 import { generateFullPianoKeys } from './model';
 import { DEFAULT_VELOCITY, PianoAudioEngine } from './audio';
+import { YAMAHA_U1_ZONES } from './sample-zones';
 import { computeLayout, hitTest, findMiddleCIndex, getWhiteKeyWidth, scrollToKey } from './keyboard';
 import { InputController } from './input';
 import type { InputKey, MotionPermissionState } from './input';
@@ -154,9 +155,13 @@ class GoodianoApp {
 
   async _loadAudio() {
     try {
-      await this.audio.loadSoundFont('assets/yahama_U1.sf2', progress => this._updateLoadingProgress(progress));
+      await this.audio.loadSampleLibrary(
+        'assets/yamaha-u1.m4a',
+        YAMAHA_U1_ZONES,
+        progress => this._updateLoadingProgress(progress),
+      );
     } catch (err) {
-      console.error('Failed to load SoundFont:', err);
+      console.error('Failed to load audio:', err);
       // Show error state
       if (this.loadingOverlay) {
         const text = this.loadingOverlay.querySelector('.loading-text');
@@ -270,7 +275,7 @@ class GoodianoApp {
   }
 
   reloadApp(): void {
-    // The service worker serves the SoundFont from its cache, so this reload
+    // The service worker serves the audio sprite from its cache, so this reload
     // refreshes app files without downloading the audio asset again.
     const url = new URL(window.location.href);
     url.searchParams.set('reload', String(Date.now()));
@@ -292,7 +297,7 @@ class GoodianoApp {
 // Bootstrap
 const app = new GoodianoApp();
 
-// Bootstrap immediately so the shell and SoundFont can be cached before the
+// Bootstrap immediately so the shell and audio can be cached before the
 // first interaction. A gesture is used only to resume the AudioContext.
 const startApp = () => app.init().catch(error => console.error('Goodiano init failed', error));
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', startApp, { once: true });

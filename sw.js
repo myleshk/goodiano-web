@@ -1,10 +1,10 @@
 /* Goodiano offline shell. All paths are resolved from the installed scope so
  * the app works when hosted below a domain subpath. */
-const CACHE_NAME = 'goodiano-v0.1.0';
+const CACHE_NAME = 'goodiano-v0.2.0';
 const GENERATED_ASSETS = [];
 const DEV_SHELL = [
   './', './index.html', './css/main.css', './manifest.json',
-  './js/app/model.ts', './js/app/audio.ts', './js/app/keyboard.ts',
+  './js/app/model.ts', './js/app/audio.ts', './js/app/sample-zones.ts', './js/app/keyboard.ts',
   './js/app/input.ts', './js/app/render.ts', './js/app/app.ts',
   './assets/icons/icon-192.png', './assets/icons/icon-512.png', './assets/icons/icon-180.png',
 ];
@@ -14,7 +14,7 @@ const toURL = path => new URL(path, self.registration.scope).href;
 self.addEventListener('install', event => {
   event.waitUntil((async () => {
     const cache = await caches.open(CACHE_NAME);
-    // A SoundFont is cached only after a successful fetch. This prevents a
+    // Audio is cached only after a successful fetch. This prevents a
     // storage failure from making the entire application shell un-installable.
     await cache.addAll(SHELL.map(toURL));
   })());
@@ -32,7 +32,7 @@ self.addEventListener('activate', event => {
 self.addEventListener('fetch', event => {
   if (event.request.method !== 'GET') return;
   const requestURL = new URL(event.request.url);
-  const isSoundFont = requestURL.pathname.endsWith('.sf2');
+  const isAudio = requestURL.pathname.endsWith('.m4a');
 
   // Always check the network for navigations so a deployed update is not
   // hidden forever behind the previous cache; retain the cached shell offline.
@@ -62,9 +62,9 @@ self.addEventListener('fetch', event => {
       try {
         await cache.put(event.request, response.clone());
       } catch (error) {
-        if (isSoundFont) {
+        if (isAudio) {
           const clients = await self.clients.matchAll();
-          clients.forEach(client => client.postMessage({ type: 'CACHE_ERROR', asset: 'SoundFont' }));
+          clients.forEach(client => client.postMessage({ type: 'CACHE_ERROR', asset: 'audio' }));
         }
       }
       return response;

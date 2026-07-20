@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PianoAudioEngine } from '../../js/app/audio';
+import type { SampleZone } from '../../js/app/audio';
+import { YAMAHA_U1_ZONES } from '../../js/app/sample-zones';
 
 class FakeAudioContext {
   state: AudioContextState = 'suspended';
@@ -10,46 +12,170 @@ class FakeAudioContext {
   async resume() { this.state = 'running'; }
 }
 
-function readyEngine() {
+function responseWith(bytes = new Uint8Array([1, 2, 3, 4])) {
+  return {
+    ok: true,
+    status: 200,
+    headers: { get: vi.fn(() => String(bytes.byteLength)) },
+    body: null,
+    arrayBuffer: vi.fn(async () => bytes.buffer),
+  };
+}
+
+function loaderEngine(decodeAudioData: ReturnType<typeof vi.fn>) {
   const engine = new PianoAudioEngine();
-  const source = () => ({
-    buffer: null,
-    playbackRate: { value: 0 },
-    connect: vi.fn(),
-    disconnect: vi.fn(),
-    start: vi.fn(),
-    stop: vi.fn(),
-    onended: null as (() => void) | null,
-  });
-  const sources = [source(), source()];
-  const gains = [
-    { gain: { value: 0, cancelScheduledValues: vi.fn(), setValueAtTime: vi.fn(), linearRampToValueAtTime: vi.fn() }, connect: vi.fn(), disconnect: vi.fn() },
-    { gain: { value: 0, cancelScheduledValues: vi.fn(), setValueAtTime: vi.fn(), linearRampToValueAtTime: vi.fn() }, connect: vi.fn(), disconnect: vi.fn() },
-  ];
+  engine.ctx = {
+    state: 'running',
+    decodeAudioData,
+  } as unknown as AudioContext;
+  engine.masterGain = {} as GainNode;
+  return engine;
+}
+
+function readyEngine(zones: readonly SampleZone[] = [{
+  loKey: 0, hiKey: 127, rootKey: 60, offsetSeconds: 1.5, durationSeconds: 6.25,
+}]) {
+  const engine = new PianoAudioEngine();
+  const createdSources: Array<{
+    buffer: AudioBuffer | null;
+    playbackRate: { value: number };
+    connect: ReturnType<typeof vi.fn>;
+    disconnect: ReturnType<typeof vi.fn>;
+    start: ReturnType<typeof vi.fn>;
+    stop: ReturnType<typeof vi.fn>;
+    onended: ((event: Event) => void) | null;
+  }> = [];
+  const createdGains: Array<{
+    gain: {
+      value: number;
+      cancelScheduledValues: ReturnType<typeof vi.fn>;
+      setValueAtTime: ReturnType<typeof vi.fn>;
+      linearRampToValueAtTime: ReturnType<typeof vi.fn>;
+    };
+    connect: ReturnType<typeof vi.fn>;
+    disconnect: ReturnType<typeof vi.fn>;
+  }> = [];
   engine.ctx = {
     state: 'running',
     currentTime: 12,
-    createBufferSource: vi.fn(() => sources.shift()!),
-    createGain: vi.fn(() => gains.shift()!),
+    createBufferSource: vi.fn(() => {
+      const source = {
+        buffer: null,
+        playbackRate: { value: 0 },
+        connect: vi.fn(),
+        disconnect: vi.fn(),
+        start: vi.fn(),
+        stop: vi.fn(),
+        onended: null,
+      };
+      createdSources.push(source);
+      return source;
+    }),
+    createGain: vi.fn(() => {
+      const gain = {
+        gain: {
+          value: 0,
+          cancelScheduledValues: vi.fn(),
+          setValueAtTime: vi.fn(),
+          linearRampToValueAtTime: vi.fn(),
+        },
+        connect: vi.fn(),
+        disconnect: vi.fn(),
+      };
+      createdGains.push(gain);
+      return gain;
+    }),
   } as unknown as AudioContext;
-  engine.masterGain = { } as GainNode;
-  engine.samples = new Map([[0, {} as AudioBuffer]]);
-  engine.zones = [{ loKey: 0, hiKey: 127, sampleIndex: 0, rootKey: 60, sampleRate: 44100, sampleStart: 0, sampleEnd: 1 }];
-  return { engine, sources, gains };
+  engine.masterGain = {} as GainNode;
+  engine.sampleBuffer = {} as AudioBuffer;
+  engine.zones = zones;
+  return { engine, createdSources, createdGains };
 }
 
 afterEach(() => vi.unstubAllGlobals());
 
-describe('PianoAudioEngine lifecycle', () => {
-  it('reports fetch failures and remains retryable', async () => {
-    vi.stubGlobal('window', { AudioContext: FakeAudioContext });
+describe('PianoAudioEngine loading', () => {
+  it('streams download progress through 90%, then reports decoded completion', async () => {
     vi.stubGlobal('document', { baseURI: 'https://example.test/app/' });
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 503 }));
-    const engine = new PianoAudioEngine();
+    const chunks = [new Uint8Array([1, 2]), new Uint8Array([3, 4])];
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      headers: { get: () => '4' },
+      body: new ReadableStream({ start(controller) { chunks.forEach(chunk => controller.enqueue(chunk)); controller.close(); } }),
+    }));
+    const decoded = { length: 44_100, numberOfChannels: 1 } as AudioBuffer;
+    const decode = vi.fn().mockResolvedValue(decoded);
+    const engine = loaderEngine(decode);
+    const progress: number[] = [];
 
-    await expect(engine.loadSoundFont('./assets/piano.sf2')).rejects.toThrow('(503)');
+    await engine.loadSampleLibrary('./assets/piano.m4a', YAMAHA_U1_ZONES, value => progress.push(value));
+
+    expect(progress).toEqual([0.45, 0.9, 1]);
+    expect(decode).toHaveBeenCalledOnce();
+    expect(engine.sampleBuffer).toBe(decoded);
+    expect(engine.zones).toBe(YAMAHA_U1_ZONES);
+    expect(engine.loaded).toBe(true);
+    expect(engine.loading).toBe(false);
+  });
+
+  it('reports fetch failures and remains retryable', async () => {
+    vi.stubGlobal('document', { baseURI: 'https://example.test/app/' });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: false, status: 503 })
+      .mockResolvedValueOnce(responseWith());
+    vi.stubGlobal('fetch', fetchMock);
+    const decoded = { length: 1, numberOfChannels: 1 } as AudioBuffer;
+    const engine = loaderEngine(vi.fn().mockResolvedValue(decoded));
+
+    await expect(engine.loadSampleLibrary('./assets/piano.m4a', YAMAHA_U1_ZONES)).rejects.toThrow('(503)');
     expect(engine.state).toBe('error');
     expect(engine.loading).toBe(false);
+    await expect(engine.loadSampleLibrary('./assets/piano.m4a', YAMAHA_U1_ZONES)).resolves.toBeUndefined();
+    expect(engine.loaded).toBe(true);
+  });
+
+  it('cleans up after decode failures and can retry', async () => {
+    vi.stubGlobal('document', { baseURI: 'https://example.test/' });
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(() => Promise.resolve(responseWith())));
+    const decoded = { length: 1, numberOfChannels: 1 } as AudioBuffer;
+    const decode = vi.fn().mockRejectedValueOnce(new Error('bad AAC')).mockResolvedValueOnce(decoded);
+    const engine = loaderEngine(decode);
+
+    await expect(engine.loadSampleLibrary('piano.m4a', YAMAHA_U1_ZONES)).rejects.toThrow('bad AAC');
+    expect(engine.sampleBuffer).toBeNull();
+    expect(engine.loading).toBe(false);
+    await expect(engine.loadSampleLibrary('piano.m4a', YAMAHA_U1_ZONES)).resolves.toBeUndefined();
+    expect(engine.sampleBuffer).toBe(decoded);
+  });
+});
+
+describe('PianoAudioEngine playback', () => {
+  it('starts low, middle, and high notes from the shared buffer at zone boundaries', () => {
+    const { engine, createdSources } = readyEngine(YAMAHA_U1_ZONES);
+    for (const midiNote of [21, 60, 108]) engine.noteOn(String(midiNote), midiNote);
+
+    for (const [index, midiNote] of [21, 60, 108].entries()) {
+      const zone = YAMAHA_U1_ZONES.find(candidate => midiNote >= candidate.loKey && midiNote <= candidate.hiKey)!;
+      expect(createdSources[index].buffer).toBe(engine.sampleBuffer);
+      expect(createdSources[index].start).toHaveBeenCalledWith(0, zone.offsetSeconds, zone.durationSeconds);
+      expect(createdSources[index].playbackRate.value).toBeCloseTo(2 ** ((midiNote - zone.rootKey) / 12));
+    }
+  });
+
+  it('uses the first zone for the intentional MIDI 102 overlap', () => {
+    const { engine, createdSources } = readyEngine(YAMAHA_U1_ZONES);
+    engine.noteOn('F#7', 102);
+    expect(createdSources[0].start).toHaveBeenCalledWith(
+      0,
+      YAMAHA_U1_ZONES[12].offsetSeconds,
+      YAMAHA_U1_ZONES[12].durationSeconds,
+    );
+  });
+
+  it('applies velocity to each note gain', () => {
+    const { engine, createdGains } = readyEngine();
+    engine.noteOn('C4', 60, 64);
+    expect(createdGains[0].gain.value).toBeCloseTo(64 / 127);
   });
 
   it('queues only held notes while loading and clears them safely', () => {
