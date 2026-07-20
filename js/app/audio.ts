@@ -20,7 +20,8 @@ interface SampleZone {
   durationSeconds: number;
 }
 interface NoteRequest { keyId: string; midiNote: number; velocity: number }
-interface ActiveNote { source: AudioBufferSourceNode; gain: GainNode; midiNote: number }
+interface Voice { source: AudioBufferSourceNode; gain: GainNode }
+interface ActiveNote { voices: Voice[]; midiNote: number }
 interface WebKitAudioWindow extends Window { webkitAudioContext?: typeof AudioContext }
 interface ExperimentalAudioSession { type: 'playback' }
 interface NavigatorWithAudioSession extends Navigator { audioSession?: ExperimentalAudioSession }
@@ -186,24 +187,26 @@ class PianoAudioEngine {
     }
   }
 
-  /** Find the first matching zone, preserving the source SoundFont ordering. */
-  _findZone(midiNote: number): SampleZone | undefined {
+  /**
+   * Select the sample(s) to blend for a note. Returns the two bracketing
+   * rootKey zones crossfaded by the note's fractional position between them,
+   * so timbre transitions smoothly across semitones instead of jumping
+   * between recordings. At an exact rootKey or outside the rootKey range,
+   * returns a single zone at weight 1.
+   */
+  _findZoneMix(midiNote: number): Array<{ zone: SampleZone; weight: number }> {
+    let below: SampleZone | undefined;
+    let above: SampleZone | undefined;
     for (const zone of this.zones) {
-      if (midiNote >= zone.loKey && midiNote <= zone.hiKey) return zone;
+      if (zone.rootKey <= midiNote && (!below || zone.rootKey > below.rootKey)) below = zone;
+      if (zone.rootKey >= midiNote && (!above || zone.rootKey < above.rootKey)) above = zone;
     }
-    let nearest = this.zones[0];
-    let minDistance = Infinity;
-    for (const zone of this.zones) {
-      const distance = Math.min(
-        Math.abs(midiNote - zone.loKey),
-        Math.abs(midiNote - zone.hiKey),
-      );
-      if (distance < minDistance) {
-        minDistance = distance;
-        nearest = zone;
-      }
+    if (below && above && below.rootKey !== above.rootKey) {
+      const t = (midiNote - below.rootKey) / (above.rootKey - below.rootKey);
+      return [{ zone: below, weight: 1 - t }, { zone: above, weight: t }];
     }
-    return nearest;
+    const single = below ?? above;
+    return single ? [{ zone: single, weight: 1 }] : [];
   }
 
   noteOn(keyId: string, midiNote: number, velocity = DEFAULT_VELOCITY): void {
@@ -215,28 +218,34 @@ class PianoAudioEngine {
   }
 
   _startNote({ keyId, midiNote, velocity = DEFAULT_VELOCITY }: NoteRequest): void {
-    if (!this.ctx || !this.sampleBuffer) return;
+    if (!this.ctx || !this.sampleBuffer || !this.masterGain) return;
     const clampedNote = Math.max(0, Math.min(127, midiNote));
-    const zone = this._findZone(clampedNote);
-    if (!zone) return;
+    const mix = this._findZoneMix(clampedNote);
+    if (mix.length === 0) return;
 
-    const source = this.ctx.createBufferSource();
-    source.buffer = this.sampleBuffer;
-    source.playbackRate.value = Math.pow(2, (clampedNote - zone.rootKey) / 12);
+    const velocityGain = Math.max(0, Math.min(127, velocity)) / 127;
+    const voices: Voice[] = [];
+    for (const { zone, weight } of mix) {
+      const source = this.ctx.createBufferSource();
+      source.buffer = this.sampleBuffer;
+      source.playbackRate.value = Math.pow(2, (clampedNote - zone.rootKey) / 12);
 
-    const gainNode = this.ctx.createGain();
-    gainNode.gain.value = Math.max(0, Math.min(127, velocity)) / 127;
-    if (!this.masterGain) return;
-    gainNode.connect(this.masterGain);
-    source.connect(gainNode);
-    source.start(0, zone.offsetSeconds, zone.durationSeconds);
+      const gainNode = this.ctx.createGain();
+      gainNode.gain.value = velocityGain * weight;
+      gainNode.connect(this.masterGain);
+      source.connect(gainNode);
+      source.start(0, zone.offsetSeconds, zone.durationSeconds);
+      voices.push({ source, gain: gainNode });
+    }
 
-    const active = { source, gain: gainNode, midiNote: clampedNote };
+    const active: ActiveNote = { voices, midiNote: clampedNote };
     // A fresh press replaces the held voice, but lets an earlier release of
     // the same pitch finish its short release envelope.
     this.activeNotes.set(keyId, active);
     this.voices.add(active);
-    source.onended = () => this._finishVoice(keyId, active);
+    for (const voice of voices) {
+      voice.source.onended = () => this._finishVoice(keyId, active, voice);
+    }
     this.queuedNotes.delete(keyId);
   }
 
@@ -254,32 +263,41 @@ class PianoAudioEngine {
 
     const now = this.ctx.currentTime;
     const releaseEnd = now + RELEASE_SECONDS;
-    note.gain.gain.cancelScheduledValues(now);
-    note.gain.gain.setValueAtTime(note.gain.gain.value, now);
-    note.gain.gain.linearRampToValueAtTime(0, releaseEnd);
-    try {
-      note.source.stop(releaseEnd);
-    } catch (_) {
-      // The source may already have reached its natural end.
+    for (const voice of note.voices) {
+      voice.gain.gain.cancelScheduledValues(now);
+      voice.gain.gain.setValueAtTime(voice.gain.gain.value, now);
+      voice.gain.gain.linearRampToValueAtTime(0, releaseEnd);
+      try {
+        voice.source.stop(releaseEnd);
+      } catch (_) {
+        // The source may already have reached its natural end.
+      }
     }
   }
 
-  _finishVoice(keyId: string, note: ActiveNote): void {
+  _finishVoice(keyId: string, note: ActiveNote, voice: Voice): void {
+    const index = note.voices.indexOf(voice);
+    if (index !== -1) note.voices.splice(index, 1);
+    voice.source.disconnect();
+    voice.gain.disconnect();
+    // Only retire the note once all of its crossfaded voices have ended.
+    if (note.voices.length > 0) return;
     if (!this.voices.delete(note)) return;
     if (this.activeNotes.get(keyId) === note) this.activeNotes.delete(keyId);
-    note.source.disconnect();
-    note.gain.disconnect();
   }
 
   _stopVoice(note: ActiveNote): void {
-    try {
-      note.source.stop(0);
-    } catch (_) {
-      // Already stopped.
+    for (const voice of note.voices) {
+      try {
+        voice.source.stop(0);
+      } catch (_) {
+        // Already stopped.
+      }
+      voice.source.disconnect();
+      voice.gain.disconnect();
     }
+    note.voices = [];
     this.voices.delete(note);
-    note.source.disconnect();
-    note.gain.disconnect();
   }
 
   allNotesOff(): void {

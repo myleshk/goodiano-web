@@ -178,23 +178,45 @@ if (selected.length !== 14) {
   throw new Error(`Expected 14 first-match zones, found ${selected.length}`);
 }
 
+// Pair each selected zone with its matching right-channel sample and mix L+R to mono.
 let cursor = 0;
 const parts = [];
 const generatedZones = [];
 for (const zone of selected) {
-  const sample = samples[zone.sampleIndex];
-  if (sample.sampleRate !== SAMPLE_RATE) {
-    throw new Error(`${sample.name} uses ${sample.sampleRate} Hz; expected ${SAMPLE_RATE} Hz`);
+  const leftSample = samples[zone.sampleIndex];
+  if (leftSample.sampleRate !== SAMPLE_RATE) {
+    throw new Error(`${leftSample.name} uses ${leftSample.sampleRate} Hz; expected ${SAMPLE_RATE} Hz`);
   }
-  if ((sample.sampleType & 0x7fff) !== 4 && (sample.sampleType & 0x7fff) !== 1) {
-    throw new Error(`${sample.name} is not a left-channel or mono sample`);
+  if ((leftSample.sampleType & 0x7fff) !== 4 && (leftSample.sampleType & 0x7fff) !== 1) {
+    throw new Error(`${leftSample.name} is not a left-channel or mono sample`);
   }
+
+  // Find the matching right-channel sample by name and key range.
+  const rightName = leftSample.name.replace(/\(L\)$/, '(R)');
+  const rightSample = samples.find(s => s.name === rightName && (s.sampleType & 0x7fff) === 2);
+
+  // Extract and mix L+R PCM to mono.
+  const length = leftSample.end - leftSample.start;
+  const leftPCM = sampleData.subarray(leftSample.start * 2, leftSample.end * 2);
+  if (leftPCM.length !== length * 2 || length <= 0) throw new Error(`Invalid sample range for ${leftSample.name}`);
+
+  let mixed;
+  if (rightSample && rightSample.end - rightSample.start === length) {
+    const rightPCM = sampleData.subarray(rightSample.start * 2, rightSample.end * 2);
+    mixed = Buffer.alloc(length * 2);
+    for (let i = 0; i < leftPCM.length; i += 2) {
+      const l = leftPCM.readInt16LE(i);
+      const r = rightPCM.readInt16LE(i);
+      mixed.writeInt16LE(Math.round((l + r) / 2), i);
+    }
+  } else {
+    mixed = Buffer.from(leftPCM);
+  }
+
   const startFrame = alignUp(cursor, AAC_FRAME_LENGTH);
   if (startFrame > cursor) parts.push(Buffer.alloc((startFrame - cursor) * 2));
-  const length = sample.end - sample.start;
-  const pcm = sampleData.subarray(sample.start * 2, sample.end * 2);
-  if (pcm.length !== length * 2 || length <= 0) throw new Error(`Invalid sample range for ${sample.name}`);
-  parts.push(pcm);
+  parts.push(mixed);
+
   generatedZones.push({
     loKey: zone.loKey,
     hiKey: zone.hiKey,

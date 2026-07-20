@@ -204,14 +204,37 @@ describe('PianoAudioEngine playback', () => {
     }
   });
 
-  it('uses the first zone for the intentional MIDI 102 overlap', () => {
-    const { engine, createdSources } = readyEngine(YAMAHA_U1_ZONES);
-    engine.noteOn('F#7', 102);
-    expect(createdSources[0].start).toHaveBeenCalledWith(
-      0,
-      YAMAHA_U1_ZONES[12].offsetSeconds,
-      YAMAHA_U1_ZONES[12].durationSeconds,
-    );
+  it('crossfades the two bracketing rootKey samples for an in-range note', () => {
+    const { engine, createdSources, createdGains } = readyEngine(YAMAHA_U1_ZONES);
+    // MIDI 50 sits between rootKey 48 (zone 4) and rootKey 55 (zone 5).
+    // t = (50 - 48) / (55 - 48) = 2/7 -> below weight 5/7, above weight 2/7.
+    // Use full velocity (127) so gain equals the crossfade weight directly.
+    engine.noteOn('D3', 50, 127);
+
+    expect(createdSources).toHaveLength(2);
+    const below = YAMAHA_U1_ZONES[4];
+    const above = YAMAHA_U1_ZONES[5];
+    const t = (50 - below.rootKey) / (above.rootKey - below.rootKey);
+
+    expect(createdSources[0].start).toHaveBeenCalledWith(0, below.offsetSeconds, below.durationSeconds);
+    expect(createdSources[0].playbackRate.value).toBeCloseTo(2 ** ((50 - below.rootKey) / 12));
+    expect(createdGains[0].gain.value).toBeCloseTo(1 - t);
+
+    expect(createdSources[1].start).toHaveBeenCalledWith(0, above.offsetSeconds, above.durationSeconds);
+    expect(createdSources[1].playbackRate.value).toBeCloseTo(2 ** ((50 - above.rootKey) / 12));
+    expect(createdGains[1].gain.value).toBeCloseTo(t);
+  });
+
+  it('uses a single un-shifted voice at a rootKey and outside the rootKey range', () => {
+    const { engine, createdSources, createdGains } = readyEngine(YAMAHA_U1_ZONES);
+    // MIDI 60 is an exact rootKey; 21 is below the lowest rootKey; 108 above the highest.
+    for (const [id, midiNote] of [['C4', 60], ['A0', 21], ['C8', 108]] as const) {
+      engine.noteOn(id, midiNote, 127);
+    }
+
+    expect(createdSources).toHaveLength(3);
+    for (const gain of createdGains) expect(gain.gain.value).toBeCloseTo(1);
+    expect(createdSources[0].playbackRate.value).toBeCloseTo(1); // MIDI 60 == rootKey 60
   });
 
   it('applies velocity to each note gain', () => {
@@ -257,16 +280,17 @@ describe('PianoAudioEngine playback', () => {
   it('fades and stops a released voice before cleaning up on ended', () => {
     const { engine } = readyEngine();
     engine.noteOn('C4', 60);
-    const voice = engine.activeNotes.get('C4')!;
+    const note = engine.activeNotes.get('C4')!;
+    const voice = note.voices[0];
     engine.noteOff('C4');
 
     expect(voice.gain.gain.linearRampToValueAtTime).toHaveBeenCalledWith(0, 12.2);
     expect(voice.source.stop).toHaveBeenCalledWith(12.2);
     expect(engine.activeNotes.has('C4')).toBe(false);
-    expect(engine.voices.has(voice)).toBe(true);
+    expect(engine.voices.has(note)).toBe(true);
 
     voice.source.onended!({} as Event);
-    expect(engine.voices.has(voice)).toBe(false);
+    expect(engine.voices.has(note)).toBe(false);
     expect(voice.source.disconnect).toHaveBeenCalledOnce();
     expect(voice.gain.disconnect).toHaveBeenCalledOnce();
   });
@@ -280,8 +304,8 @@ describe('PianoAudioEngine playback', () => {
     const second = engine.activeNotes.get('C4')!;
 
     expect(second).not.toBe(first);
-    expect(first.source.stop).toHaveBeenCalledWith(12.2);
-    first.source.onended!({} as Event);
+    expect(first.voices[0].source.stop).toHaveBeenCalledWith(12.2);
+    first.voices[0].source.onended!({} as Event);
     expect(engine.activeNotes.get('C4')).toBe(second);
     expect(engine.voices.has(second)).toBe(true);
   });
@@ -293,10 +317,12 @@ describe('PianoAudioEngine playback', () => {
     engine.noteOff('C4');
     engine.noteOn('E4', 64);
     const held = engine.activeNotes.get('E4')!;
+    const releasedSource = released.voices[0].source;
+    const heldSource = held.voices[0].source;
 
     engine.allNotesOff();
-    expect(released.source.stop).toHaveBeenLastCalledWith(0);
-    expect(held.source.stop).toHaveBeenLastCalledWith(0);
+    expect(releasedSource.stop).toHaveBeenLastCalledWith(0);
+    expect(heldSource.stop).toHaveBeenLastCalledWith(0);
     expect(engine.voices.size).toBe(0);
     expect(engine.activeNotes.size).toBe(0);
   });
