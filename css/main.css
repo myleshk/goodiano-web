@@ -313,6 +313,8 @@ html, body {
   font: 11px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
+.settings-action[hidden] { display: none; }
+
 .settings-action {
   display: block;
   width: 100%;

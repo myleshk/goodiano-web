@@ -176,8 +176,26 @@ describe('install promotion', () => {
     const localized = new InstallPromotionController(environment(ios));
     localized.init();
     localized.markAppReady();
+    expect(document.querySelector<HTMLButtonElement>('.install-settings-button')?.textContent).toBe('Install to Home Screen');
     setLocalePreference('zh-TW');
     expect(document.querySelector<HTMLElement>('.install-promotion-benefits')?.textContent).toContain('主畫面');
+    expect(document.querySelector<HTMLButtonElement>('.install-settings-button')?.textContent).toBe('安裝到主畫面');
     expect(document.querySelector<HTMLButtonElement>('.install-promotion-primary')?.textContent).toBe('查看步驟');
+  });
+
+  it('hides installation UI in an iOS standalone session', () => {
+    setupDOM();
+    const iosPWA = {
+      userAgent: 'Mozilla/5.0 (iPhone) AppleWebKit/605.1.15 Version/18.5 Mobile Safari/604.1',
+      platform: 'iPhone',
+      maxTouchPoints: 5,
+      standalone: true,
+    };
+    const controller = new InstallPromotionController(environment(iosPWA));
+    controller.init();
+    controller.markAppReady();
+
+    expect(document.querySelector<HTMLElement>('.install-promotion')?.hidden).toBe(true);
+    expect(document.querySelector<HTMLButtonElement>('.install-settings-button')?.hidden).toBe(true);
   });
 });
