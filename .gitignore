@@ -3,7 +3,9 @@ node_modules/
 
 # Build output
 dist/
-build/
+build/**
+# versioned-assets.ts is source (a Vite plugin), not generated output
+!build/versioned-assets.ts
 
 # OS files
 .DS_Store
