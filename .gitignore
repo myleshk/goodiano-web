@@ -21,3 +21,6 @@ Thumbs.db
 # Temp
 *.tmp
 .cache/
+
+# Vitest browser-mode auto-generated screenshots
+__screenshots__/
