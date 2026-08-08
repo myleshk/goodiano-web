@@ -67,7 +67,7 @@ const en = {
   'keyboard.label': 'Piano keyboard',
   'keyboard.octave': 'Octave {octave}',
   'keyboard.hint': 'Computer keyboard: Z–M and Q–P play notes, ← → shift octave, Shift/Alt change dynamics.',
-  'minimap.label': 'Keyboard navigator',
+  'minimap.label': 'Keyboard position',
 } as const;
 
 export type TranslationKey = keyof typeof en;
@@ -133,7 +133,7 @@ const zhCN = {
   'keyboard.label': '钢琴键盘',
   'keyboard.octave': '第 {octave} 八度',
   'keyboard.hint': '电脑键盘：Z–M 与 Q–P 弹奏音符，← → 切换八度，Shift/Alt 调整力度。',
-  'minimap.label': '键盘导航器',
+  'minimap.label': '键盘位置',
 } satisfies Catalog;
 
 const zhTW = {
@@ -196,7 +196,7 @@ const zhTW = {
   'keyboard.label': '鋼琴鍵盤',
   'keyboard.octave': '第 {octave} 八度',
   'keyboard.hint': '電腦鍵盤：Z–M 與 Q–P 彈奏音符，← → 切換八度，Shift/Alt 調整力度。',
-  'minimap.label': '鍵盤導覽器',
+  'minimap.label': '鍵盤位置',
 } satisfies Catalog;
 
 const catalogs: Record<SupportedLocale, Catalog> = { en, 'zh-CN': zhCN, 'zh-TW': zhTW };

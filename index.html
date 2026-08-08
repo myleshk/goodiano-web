@@ -36,8 +36,11 @@
       <button class="loading-retry" type="button" data-i18n="loading.retry">Retry</button>
     </div>
 
-    <!-- Mini-map: a picture of where the visible keys sit on the full board. -->
-    <div class="minimap-container" aria-hidden="true"></div>
+    <!-- Mini-map: shows where the visible keys sit on the full board, and
+         scrolls the keyboard when tapped, dragged, or driven from the keys. -->
+    <div class="minimap-container" role="slider" tabindex="0"
+      aria-label="Keyboard position" data-i18n-aria-label="minimap.label"
+      aria-valuemin="0" aria-valuemax="0" aria-valuenow="0"></div>
 
     <!-- Piano keyboard. The scroll region is the single focusable control; the
          keys inside it are a visual rendering, played through the bindings

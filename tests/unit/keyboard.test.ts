@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { computeLayout, findMiddleCIndex, getMiniMapViewport, getViewportRange, getWhiteKeyWidth, hitTest, scrollToKey } from '../../js/app/keyboard';
+import { computeLayout, findMiddleCIndex, getMiniMapViewport, getViewportRange, getWhiteKeyWidth, hitTest, scrollToKey, whiteKeyIndexAtMiniMapX } from '../../js/app/keyboard';
 import { generateFullPianoKeys } from '../../js/app/model';
 
 describe('88-key keyboard model and layout', () => {
@@ -42,6 +42,19 @@ describe('88-key keyboard model and layout', () => {
       start: 0.3571428571428571,
       end: 0.5357142857142857,
     });
+  });
+
+  it('inverts the mini-map projection back onto white keys', () => {
+    expect(whiteKeyIndexAtMiniMapX(layout, 0)).toBe(0);
+    expect(whiteKeyIndexAtMiniMapX(layout, 1)).toBe(layout.whiteKeys.length - 1);
+    // Out-of-range fractions clamp rather than escaping the keyboard.
+    expect(whiteKeyIndexAtMiniMapX(layout, -3)).toBe(0);
+    expect(whiteKeyIndexAtMiniMapX(layout, 9)).toBe(layout.whiteKeys.length - 1);
+
+    // Round trip: every stored position maps back to its own key.
+    for (const [index, position] of layout.miniMapKeyXs.entries()) {
+      expect(whiteKeyIndexAtMiniMapX(layout, position.x)).toBe(index);
+    }
   });
 
   it('uses the iOS 55-point logical key width in landscape', () => {

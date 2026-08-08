@@ -172,6 +172,24 @@ function getMiniMapViewport(
 }
 
 /**
+ * Inverse of the mini-map projection: the white key drawn at a horizontal
+ * fraction of the mini-map. Partial edge octaves are drawn at half width, so
+ * this has to walk the stored positions rather than scale by key count.
+ */
+function whiteKeyIndexAtMiniMapX(layout: KeyboardLayout, fraction: number): number {
+  const positions = layout.miniMapKeyXs;
+  if (positions.length === 0) return 0;
+  const clamped = Math.max(0, Math.min(1, fraction));
+  let index = 0;
+  // Positions ascend, so the last one at or before the fraction is the hit.
+  for (let i = 0; i < positions.length; i += 1) {
+    if (positions[i].x > clamped) break;
+    index = i;
+  }
+  return index;
+}
+
+/**
  * Choose a white-key width for the current keyboard viewport. Portrait keeps
  * ten keys visible, while landscape matches the iOS keyboard's 55-point
  * logical white-key width. CSS caps landscape height to a 7:1 key ratio.
@@ -206,7 +224,16 @@ function findMiddleCIndex(layout: KeyboardLayout): number {
   return idx >= 0 ? idx : Math.floor(layout.whiteKeys.length / 2);
 }
 
-export { computeLayout, hitTest, getViewportRange, getMiniMapViewport, getWhiteKeyWidth, scrollToKey, findMiddleCIndex };
+export {
+  computeLayout,
+  hitTest,
+  getViewportRange,
+  getMiniMapViewport,
+  getWhiteKeyWidth,
+  scrollToKey,
+  findMiddleCIndex,
+  whiteKeyIndexAtMiniMapX,
+};
 export type { KeyboardLayout, MiniMapKeyPosition, OctaveBlock };
 import type { PianoKey } from './model';
 

@@ -163,6 +163,14 @@ html, body {
   width: 100%;
   position: relative;
   z-index: 10;
+  cursor: pointer;
+  /* Own the horizontal gesture so dragging navigates instead of panning. */
+  touch-action: none;
+}
+
+.minimap-container:focus-visible {
+  outline: 2px solid #7db8ff;
+  outline-offset: -2px;
 }
 
 /* --- Touch velocity diagnostics --- */

@@ -10,7 +10,7 @@ Play Goodiano at [goodiano.myles.hk](https://goodiano.myles.hk).
 - **Realistic sound** — Polyphonic playback from a compact Yamaha U1 AAC audio sprite decoded by the Web Audio API.
 - **Mobile-first** — Optimized for iPhone/iOS: notch & status-bar safe areas, `standalone` PWA mode, touch gestures.
 - **Responsive layout** — Adapts between portrait (≥10 visible white keys) and landscape (55px logical keys).
-- **Mini-map overview** — Colour-coded octave blocks with an indicator showing which part of the keyboard is on screen.
+- **Mini-map navigator** — Colour-coded octave blocks showing which part of the keyboard is on screen. Tap or drag it to jump anywhere on the 88 keys; focus it and use the arrows, Page Up/Down, Home, and End.
 - **Offline support** — A service worker caches the app shell and lazily caches the audio sprite for offline play.
 - **Pointer input** — Touch and mouse input, with velocity from touch pressure or device motion where available.
 - **Computer keyboard** — `Z`–`M` and `Q`–`P` play two octaves with the black keys on the row above; `←`/`→` shift octave and scroll the view; `Shift` and `Alt` accent or soften. Mapped by physical key position, so non-QWERTY layouts work unchanged.

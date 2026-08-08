@@ -7,7 +7,14 @@
 import { generateFullPianoKeys } from './model';
 import { DEFAULT_VELOCITY, PianoAudioEngine } from './audio';
 import { YAMAHA_U1_ZONES } from './sample-zones';
-import { computeLayout, hitTest, findMiddleCIndex, getWhiteKeyWidth, scrollToKey } from './keyboard';
+import {
+  computeLayout,
+  hitTest,
+  findMiddleCIndex,
+  getWhiteKeyWidth,
+  scrollToKey,
+  whiteKeyIndexAtMiniMapX,
+} from './keyboard';
 import { InputController } from './input';
 import type { InputKey, MotionPermissionState, VelocityInputMode } from './input';
 import { loadSensitivity, saveSensitivity } from './velocity-settings';
@@ -100,7 +107,8 @@ class GoodianoApp {
     this.renderer.build(this.layout);
     this.renderer.buildMiniMap();
 
-    // Compute initial sizes
+    // Size the keys so the renderer has real dimensions to work from. The
+    // scroll bounds are published to the input controller once it exists.
     this._recalculateLayout();
 
     // Init input
@@ -141,11 +149,16 @@ class GoodianoApp {
     });
     this.computerKeyboard.attach();
     this._setupSustainControl();
+    this._setupMiniMapNavigation();
 
     this.input.setConverters(
       (cx, cy) => this._screenToKeyboard(cx, cy),
       (x, y) => hitTest(x, y, this.whiteKeyWidth, this.keyboardHeight, this.layout)
     );
+
+    // Hand the scroll bounds to the controller now that it exists. Without
+    // this the app could not scroll until a resize happened to recompute them.
+    this._recalculateLayout();
 
     // Attach resize listener
     this._resizeObserver = new ResizeObserver(() => this._recalculateLayout());
@@ -373,6 +386,79 @@ class GoodianoApp {
   }
 
   /**
+   * Turn the mini-map into a real navigator: tap or drag anywhere on it to
+   * bring that part of the keyboard into view, or drive it from the keys once
+   * focused. The touched point becomes the centre of the viewport.
+   */
+  private _setupMiniMapNavigation(): void {
+    const map = this.miniMapEl;
+    if (!map) return;
+    const scrollToPointer = (clientX: number): void => {
+      const rect = map.getBoundingClientRect();
+      if (rect.width <= 0) return;
+      const fraction = (clientX - rect.left) / rect.width;
+      this._scrollToWhiteKeyIndex(whiteKeyIndexAtMiniMapX(this.layout, fraction));
+    };
+    // Track the dragging pointer directly rather than asking for capture
+    // state: capture can be refused or lost, and the drag should survive that.
+    let dragPointerId: number | null = null;
+    map.addEventListener('pointerdown', event => {
+      event.preventDefault();
+      dragPointerId = event.pointerId;
+      try { map.setPointerCapture(event.pointerId); } catch (_) { /* Safari */ }
+      scrollToPointer(event.clientX);
+    });
+    map.addEventListener('pointermove', event => {
+      if (dragPointerId !== event.pointerId) return;
+      event.preventDefault();
+      scrollToPointer(event.clientX);
+    });
+    const endDrag = (event: PointerEvent): void => {
+      if (dragPointerId !== event.pointerId) return;
+      dragPointerId = null;
+      try { map.releasePointerCapture(event.pointerId); } catch (_) { /* Safari */ }
+    };
+    map.addEventListener('pointerup', endDrag);
+    map.addEventListener('pointercancel', endDrag);
+    map.addEventListener('keydown', event => this._onMiniMapKey(event));
+    map.setAttribute('aria-valuemax', String(Math.max(0, this.layout.whiteKeys.length - 1)));
+  }
+
+  private _onMiniMapKey(event: KeyboardEvent): void {
+    const steps: Record<string, number> = {
+      ArrowLeft: -1, ArrowDown: -1, ArrowRight: 1, ArrowUp: 1,
+      PageDown: -7, PageUp: 7,
+    };
+    const lastIndex = Math.max(0, this.layout.whiteKeys.length - 1);
+    let target: number | null = null;
+    if (event.key in steps) target = this._centredWhiteKeyIndex() + steps[event.key];
+    else if (event.key === 'Home') target = 0;
+    else if (event.key === 'End') target = lastIndex;
+    if (target === null) return;
+    event.preventDefault();
+    // Keep the arrows here rather than letting them shift the playing octave.
+    event.stopPropagation();
+    this._scrollToWhiteKeyIndex(Math.max(0, Math.min(lastIndex, target)));
+  }
+
+  /** The white key currently sitting at the middle of the viewport. */
+  private _centredWhiteKeyIndex(): number {
+    if (this.whiteKeyWidth <= 0) return 0;
+    const offset = this.input ? this.input.scrollOffset : 0;
+    const index = Math.round((offset + this.viewportWidth / 2) / this.whiteKeyWidth - 0.5);
+    return Math.max(0, Math.min(this.layout.whiteKeys.length - 1, index));
+  }
+
+  private _updateMiniMapValue(): void {
+    const map = this.miniMapEl;
+    if (!map) return;
+    const index = this._centredWhiteKeyIndex();
+    map.setAttribute('aria-valuenow', String(index));
+    const key = this.layout.whiteKeys[index];
+    if (key) map.setAttribute('aria-valuetext', key.name);
+  }
+
+  /**
    * Keep the toggle's expanded state truthful, and let Escape close the panel
    * from anywhere inside it, returning focus to the control that opened it.
    */
@@ -570,6 +656,7 @@ class GoodianoApp {
     if (!this.renderer) return;
     this.scrollContainer.scrollLeft = offset;
     this.renderer.updateMiniMap(offset);
+    this._updateMiniMapValue();
   }
 
   _getMidiNote(keyId: string): number {
