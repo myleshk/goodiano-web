@@ -107,6 +107,7 @@ class PianoAudioEngine {
         this.state = this.loaded ? 'ready' : 'loading';
         // Safari can suspend a context while fingers are still down.
         // Rebuild those voices from the held-key snapshot after resuming.
+        // oxlint-disable-next-line no-useless-spread -- _stopVoice deletes from this.voices while iterating.
         for (const active of [...this.voices]) this._stopVoice(active);
         for (const note of this.heldNotes.values()) this.queuedNotes.set(note.keyId, note);
         this._flushQueuedNotes();
@@ -303,6 +304,7 @@ class PianoAudioEngine {
   allNotesOff(): void {
     this.heldNotes.clear();
     this.queuedNotes.clear();
+    // oxlint-disable-next-line no-useless-spread -- _stopVoice deletes from this.voices while iterating.
     for (const note of [...this.voices]) this._stopVoice(note);
     this.activeNotes.clear();
   }

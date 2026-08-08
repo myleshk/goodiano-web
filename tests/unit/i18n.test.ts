@@ -57,8 +57,8 @@ describe('localization', () => {
   });
 
   it('provides the complete English key set in every catalog', () => {
-    const englishKeys = Object.keys(translationCatalogs.en).sort();
-    expect(Object.keys(translationCatalogs['zh-CN']).sort()).toEqual(englishKeys);
-    expect(Object.keys(translationCatalogs['zh-TW']).sort()).toEqual(englishKeys);
+    const englishKeys = Object.keys(translationCatalogs.en).toSorted();
+    expect(Object.keys(translationCatalogs['zh-CN']).toSorted()).toEqual(englishKeys);
+    expect(Object.keys(translationCatalogs['zh-TW']).toSorted()).toEqual(englishKeys);
   });
 });

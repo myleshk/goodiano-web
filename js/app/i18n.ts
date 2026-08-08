@@ -185,14 +185,14 @@ const zhTW = {
 } satisfies Catalog;
 
 const catalogs: Record<SupportedLocale, Catalog> = { en, 'zh-CN': zhCN, 'zh-TW': zhTW };
-const supportedLocales: readonly SupportedLocale[] = ['en', 'zh-CN', 'zh-TW'];
+const supportedLocales: ReadonlySet<SupportedLocale> = new Set(['en', 'zh-CN', 'zh-TW']);
 const listeners = new Set<(locale: SupportedLocale) => void>();
 let preference: LocalePreference = 'system';
 let locale: SupportedLocale = 'en';
 let initialized = false;
 
 function isLocalePreference(value: unknown): value is LocalePreference {
-  return value === 'system' || supportedLocales.includes(value as SupportedLocale);
+  return value === 'system' || supportedLocales.has(value as SupportedLocale);
 }
 
 export function resolveLocale(languages: readonly string[] | string | null | undefined): SupportedLocale {
