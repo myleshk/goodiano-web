@@ -63,9 +63,11 @@ npm run dev
 Production and verification commands:
 
 ```bash
+npm run lint
 npm run typecheck
 npm test
 npm run test:browser
+npm run test:coverage   # both suites in one run, with a coverage floor
 npm run build
 npm run preview
 ```

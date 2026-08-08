@@ -37,9 +37,6 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      - name: Unit tests
-        run: npm test
-
       - name: Cache Playwright browsers
         uses: actions/cache@v4
         with:
@@ -50,8 +47,19 @@ jobs:
       - name: Install WebKit
         run: npx playwright install --with-deps webkit
 
-      - name: Browser tests
-        run: npm run test:browser
+      # Runs the unit and browser suites together and fails if coverage drops
+      # below the recorded floor.
+      - name: Tests and coverage
+        run: npm run test:coverage
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Build
         run: npm run build
