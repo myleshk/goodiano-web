@@ -317,6 +317,7 @@ html, body {
   outline-offset: -2px;
 }
 
+.volume-control label,
 .sensitivity-control label {
   display: block;
   margin-top: 8px;
@@ -331,6 +332,7 @@ html, body {
   gap: 10px;
 }
 
+.master-volume,
 .velocity-sensitivity {
   flex: 1;
   min-width: 0;
@@ -338,11 +340,13 @@ html, body {
   cursor: pointer;
 }
 
+.master-volume:focus-visible,
 .velocity-sensitivity:focus-visible {
   outline: 2px solid #7db8ff;
   outline-offset: 3px;
 }
 
+.master-volume-output,
 .velocity-sensitivity-output {
   width: 3ch;
   color: rgba(255,255,255,0.9);
@@ -573,6 +577,8 @@ html, body {
   -webkit-user-select: none;
   transition: transform 0.12s cubic-bezier(0.25, 0.1, 0.25, 1), background-color 0.08s ease;
 }
+
+.keyboard-content.hide-key-labels .key-label { display: none; }
 
 .key-white .key-label {
   font-size: 18px;

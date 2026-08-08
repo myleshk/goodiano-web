@@ -18,6 +18,12 @@ import {
 import { InputController } from './input';
 import type { InputKey, MotionPermissionState, VelocityInputMode } from './input';
 import { loadSensitivity, saveSensitivity } from './velocity-settings';
+import {
+  loadKeyLabelsVisible,
+  loadVolumePercent,
+  saveKeyLabelsVisible,
+  saveVolumePercent,
+} from './preferences';
 import { KeyboardRenderer } from './render';
 import type { KeyboardLayout } from './keyboard';
 import type { PianoKey } from './model';
@@ -65,6 +71,7 @@ class GoodianoApp {
   private readonly installPromotion: InstallPromotionController;
   computerKeyboard: ComputerKeyboardController | null = null;
   private _sustainLatched = false;
+  private _keyLabelsVisible = true;
 
   constructor(installPromotion: InstallPromotionController = new InstallPromotionController()) {
     this.installPromotion = installPromotion;
@@ -149,6 +156,7 @@ class GoodianoApp {
     });
     this.computerKeyboard.attach();
     this._setupSustainControl();
+    this._setupOutputControls();
     this._setupMiniMapNavigation();
 
     this.input.setConverters(
@@ -484,6 +492,40 @@ class GoodianoApp {
   private _announce(message: string): void {
     const announcer = document.querySelector<HTMLElement>('.keyboard-announcer');
     if (announcer) announcer.textContent = message;
+  }
+
+  /**
+   * Listening level and key labelling. Both persist, because they are settings
+   * a player chooses once for their room or their sight-reading rather than
+   * adjusting from piece to piece.
+   */
+  private _setupOutputControls(): void {
+    const slider = this.settingsPanel?.querySelector<HTMLInputElement>('.master-volume');
+    const output = this.settingsPanel?.querySelector<HTMLOutputElement>('.master-volume-output');
+    const volumePercent = loadVolumePercent();
+    this.audio.setVolume(volumePercent / 100);
+    if (slider) {
+      slider.value = String(volumePercent);
+      slider.addEventListener('input', () => {
+        const saved = saveVolumePercent(Number(slider.value));
+        this.audio.setVolume(saved / 100);
+        if (output) output.value = String(saved);
+      });
+    }
+    if (output) output.value = String(volumePercent);
+
+    const toggle = this.settingsPanel?.querySelector<HTMLButtonElement>('.key-labels-toggle');
+    this._setKeyLabelsVisible(loadKeyLabelsVisible());
+    toggle?.addEventListener('click', () => {
+      this._setKeyLabelsVisible(saveKeyLabelsVisible(!this._keyLabelsVisible));
+    });
+  }
+
+  private _setKeyLabelsVisible(visible: boolean): void {
+    this._keyLabelsVisible = visible;
+    this.keyboardContent?.classList.toggle('hide-key-labels', !visible);
+    this.settingsPanel?.querySelector<HTMLButtonElement>('.key-labels-toggle')
+      ?.setAttribute('aria-pressed', String(visible));
   }
 
   /**

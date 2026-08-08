@@ -18,6 +18,8 @@ const VELOCITY_CURVE_EXPONENT = 2;
 const TONE_MIN_HZ = 2000;
 const TONE_MAX_HZ = 18000;
 const RELEASE_SECONDS = 0.2;
+// Time constant for volume changes, short enough to feel immediate.
+const VOLUME_RAMP_SECONDS = 0.015;
 // A stolen voice is cut short mid-sustain; fade it rather than click.
 const STEAL_FADE_SECONDS = 0.06;
 // Ten fingers plus sustained releases stay well inside this. The cap exists to
@@ -87,6 +89,8 @@ class PianoAudioEngine {
   /** Notes the player has let go of that the pedal is holding open. */
   sustainedNotes = new Map<string, ActiveNote>();
   sustainEnabled = false;
+  /** Listening level, 0 to 1, applied on top of the fixed headroom. */
+  private _volume = 1;
   /** Memoised zone selection, rebuilt whenever the zone set is replaced. */
   private _zoneMixSource: readonly SampleZone[] | null = null;
   private _zoneMixTable: ZoneMix[] = [];
@@ -105,7 +109,7 @@ class PianoAudioEngine {
     configurePlaybackAudioSession();
     this.ctx = new AudioContextClass();
     this.masterGain = this.ctx.createGain();
-    this.masterGain.gain.value = MASTER_GAIN;
+    this.masterGain.gain.value = MASTER_GAIN * this._volume;
     this.limiter = this._createLimiter(this.ctx);
     if (this.limiter) {
       this.masterGain.connect(this.limiter);
@@ -117,6 +121,25 @@ class PianoAudioEngine {
     this.state = this.ctx.state === 'running' && this.loaded ? 'ready' :
       this.ctx.state === 'running' ? 'loading' : 'awaitingGesture';
     return this.ctx;
+  }
+
+  get volume(): number {
+    return this._volume;
+  }
+
+  /**
+   * Set the listening level, 0 to 1. Applied above the fixed headroom so the
+   * limiter keeps protecting the output at any setting, and ramped rather than
+   * stepped so dragging a slider does not produce zipper noise.
+   */
+  setVolume(volume: number): void {
+    if (!Number.isFinite(volume)) return;
+    this._volume = Math.max(0, Math.min(1, volume));
+    const target = MASTER_GAIN * this._volume;
+    const gain = this.masterGain?.gain;
+    if (!gain) return;
+    if (this.ctx) gain.setTargetAtTime(target, this.ctx.currentTime, VOLUME_RAMP_SECONDS);
+    else gain.value = target;
   }
 
   /** Build the output limiter, or null where the node is unavailable. */

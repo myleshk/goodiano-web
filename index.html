@@ -75,6 +75,14 @@
       <button type="button" data-locale="zh-CN" aria-pressed="false">简</button>
       <button type="button" data-locale="zh-TW" aria-pressed="false">繁</button>
     </div>
+    <div class="volume-control">
+      <label id="master-volume-label" for="master-volume" data-i18n="volume.label">Volume</label>
+      <div class="sensitivity-input-row">
+        <input id="master-volume" class="master-volume" type="range" min="0" max="100" value="100">
+        <output class="master-volume-output" for="master-volume">100</output>
+      </div>
+    </div>
+    <button class="settings-action key-labels-toggle" type="button" aria-pressed="true" data-i18n="labels.label">Note Names</button>
     <button class="settings-action sustain-toggle" type="button" aria-pressed="false" data-i18n="sustain.label">Sustain Pedal</button>
     <button class="settings-action velocity-toggle" type="button" aria-pressed="false" data-i18n="velocity.enable">Enable Velocity</button>
     <div class="sensitivity-control" hidden>

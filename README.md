@@ -15,6 +15,7 @@ Play Goodiano at [goodiano.myles.hk](https://goodiano.myles.hk).
 - **Pointer input** — Touch and mouse input, with velocity from touch pressure or device motion where available.
 - **Computer keyboard** — `Z`–`M` and `Q`–`P` play two octaves with the black keys on the row above; `←`/`→` shift octave and scroll the view; `Shift` and `Alt` accent or soften. Mapped by physical key position, so non-QWERTY layouts work unchanged.
 - **Sustain pedal** — Hold `Space`, or latch the pedal from the settings panel. Released keys keep ringing until the pedal lifts.
+- **Output settings** — Master volume and a note-name toggle, both remembered between visits.
 
 ## Tech Stack
 
