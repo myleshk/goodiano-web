@@ -42,6 +42,11 @@ for (const locale of ['en', 'zh-CN', 'zh-TW']) {
 
 const audioFile = immutableAssets.find(file => /assets\/yamaha-u1-[a-f0-9]{10}\.m4a$/.test(file));
 assert(audioFile, 'missing hashed audio sprite');
+assert(!html.includes('assets/yamaha-u1.m4a'), 'source audio URL remains in index.html');
+assert(
+  html.includes(`<link rel="preload" href="./${audioFile}" as="fetch"`),
+  'index.html does not preload the hashed audio sprite',
+);
 assert(!worker.includes(audioFile), 'audio sprite must remain lazy rather than precached');
 assert(worker.includes('goodiano-audio-v1'), 'audio runtime cache is missing');
 assert(worker.includes("startsWith(`goodiano-`)") || worker.includes('startsWith("goodiano-")'), 'legacy cache cleanup is missing');

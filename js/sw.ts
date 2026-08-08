@@ -29,6 +29,35 @@ async function broadcast(message: unknown): Promise<void> {
   clients.forEach(client => client.postMessage(message));
 }
 
+/**
+ * One network download per sprite, however many requests ask for it at once.
+ * The page preloads the sprite from markup and then fetches it again from the
+ * script; without this both would miss the cache and pull it twice.
+ */
+const inFlightAudio = new Map<string, Promise<Response>>();
+
+async function fetchAudioOnce(request: Request): Promise<Response> {
+  const key = request.url;
+  let pending = inFlightAudio.get(key);
+  if (!pending) {
+    pending = (async () => {
+      const cache = await caches.open(AUDIO_CACHE);
+      const response = await fetch(request);
+      if (!response.ok) return response;
+      if (!await storeAudioResponse(cache, request, response)) {
+        await broadcast({ type: 'CACHE_ERROR', asset: 'audio' });
+      }
+      return response;
+    })();
+    inFlightAudio.set(key, pending);
+    // Clear on settle either way, so a failure does not poison later attempts.
+    void pending.catch(() => {}).finally(() => inFlightAudio.delete(key));
+  }
+  // The shared response is never read directly, so each caller gets its own
+  // readable copy.
+  return (await pending).clone();
+}
+
 // Navigations must check the network before the precache route can match
 // index.html. The precached shell remains the offline fallback.
 registerRoute(
@@ -50,13 +79,7 @@ registerRoute(
     const cache = await caches.open(AUDIO_CACHE);
     const cached = await cache.match(request);
     if (cached) return cached;
-
-    const response = await fetch(request);
-    if (!response.ok) return response;
-    if (!await storeAudioResponse(cache, request, response)) {
-      await broadcast({ type: 'CACHE_ERROR', asset: 'audio' });
-    }
-    return response;
+    return fetchAudioOnce(request);
   },
 );
 

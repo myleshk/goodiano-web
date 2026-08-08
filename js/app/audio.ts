@@ -190,7 +190,12 @@ class PianoAudioEngine {
       const timeout = setTimeout(() => controller.abort(), AUDIO_FETCH_TIMEOUT_MS);
       let response: Response;
       try {
-        response = await fetch(new URL(url, document.baseURI), { signal: controller.signal });
+        // credentials must match the markup preload's crossorigin="anonymous",
+        // or this becomes a second download rather than a cache hit.
+        response = await fetch(new URL(url, document.baseURI), {
+          signal: controller.signal,
+          credentials: 'omit',
+        });
       } finally {
         clearTimeout(timeout);
       }
