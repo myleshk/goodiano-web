@@ -74,12 +74,29 @@ function computeLayout(keys: PianoKey[]): KeyboardLayout {
     accumulated += block.widthMultiplier;
   }
 
+  // Indexes for the input hot paths: a press resolves a key by id, the
+  // computer keyboard by pitch, and hit testing by white-key boundary.
+  const keysById = new Map<string, PianoKey>();
+  const keysByMidiNote = new Map<number, PianoKey>();
+  for (const key of keys) {
+    keysById.set(key.id, key);
+    keysByMidiNote.set(key.midiNote, key);
+  }
+  const blackKeyByWhiteIndex = new Map<number, PianoKey>();
+  for (const blackKey of blackKeys) {
+    const whiteIndex = blackKeyWhiteIndex[blackKey.id];
+    if (whiteIndex != null) blackKeyByWhiteIndex.set(whiteIndex, blackKey);
+  }
+
   return {
     keys,
     whiteKeys,
     blackKeys,
     whiteKeyCount: whiteKeys.length,
     blackKeyWhiteIndex,
+    keysById,
+    keysByMidiNote,
+    blackKeyByWhiteIndex,
     octaveBlocks,
     miniMapKeyXs,
     whiteIndexMap,
@@ -99,22 +116,19 @@ function computeLayout(keys: PianoKey[]): KeyboardLayout {
  * @returns {object|null} PianoKeyModel or null
  */
 function hitTest(x: number, y: number, whiteKeyWidth: number, keyboardHeight: number, layout: KeyboardLayout): PianoKey | null {
-  const { whiteKeys, blackKeys, blackKeyWhiteIndex } = layout;
+  const { whiteKeys, blackKeyByWhiteIndex } = layout;
 
   const blackWidth = whiteKeyWidth * 0.65;
   const blackHeight = keyboardHeight * 0.6;
 
-  // Check black keys first (upper 60% of keyboard)
-  if (y < blackHeight) {
-    for (const bk of blackKeys) {
-      const wPos = blackKeyWhiteIndex[bk.id];
-      if (wPos == null) continue;
-      const centerX = wPos * whiteKeyWidth;
-      const left = centerX - blackWidth / 2;
-      const right = centerX + blackWidth / 2;
-      if (x >= left && x <= right && y >= 0 && y <= blackHeight) {
-        return bk;
-      }
+  // Check black keys first (upper 60% of keyboard). Each is centred on a
+  // white-key boundary and none overlap, so the only candidate is the key on
+  // the nearest boundary — no scan needed.
+  if (y >= 0 && y < blackHeight && whiteKeyWidth > 0) {
+    const boundary = Math.round(x / whiteKeyWidth);
+    const blackKey = blackKeyByWhiteIndex.get(boundary);
+    if (blackKey && Math.abs(x - boundary * whiteKeyWidth) <= blackWidth / 2) {
+      return blackKey;
     }
   }
 
@@ -256,6 +270,9 @@ interface KeyboardLayout {
   blackKeys: PianoKey[];
   whiteKeyCount: number;
   blackKeyWhiteIndex: Record<string, number>;
+  keysById: Map<string, PianoKey>;
+  keysByMidiNote: Map<number, PianoKey>;
+  blackKeyByWhiteIndex: Map<number, PianoKey>;
   octaveBlocks: OctaveBlock[];
   miniMapKeyXs: MiniMapKeyPosition[];
   whiteIndexMap: Map<string, number>;

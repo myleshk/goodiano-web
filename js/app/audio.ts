@@ -44,6 +44,7 @@ interface SampleZone {
   durationSeconds: number;
 }
 interface NoteRequest { keyId: string; midiNote: number; velocity: number }
+type ZoneMix = Array<{ zone: SampleZone; weight: number }>;
 interface Voice { source: AudioBufferSourceNode; gain: GainNode }
 interface ActiveNote {
   voices: Voice[];
@@ -86,6 +87,9 @@ class PianoAudioEngine {
   /** Notes the player has let go of that the pedal is holding open. */
   sustainedNotes = new Map<string, ActiveNote>();
   sustainEnabled = false;
+  /** Memoised zone selection, rebuilt whenever the zone set is replaced. */
+  private _zoneMixSource: readonly SampleZone[] | null = null;
+  private _zoneMixTable: ZoneMix[] = [];
   loaded = false;
   loading = false;
   state: AudioEngineState = 'loading';
@@ -257,7 +261,17 @@ class PianoAudioEngine {
    * between recordings. At an exact rootKey or outside the rootKey range,
    * returns a single zone at weight 1.
    */
-  _findZoneMix(midiNote: number): Array<{ zone: SampleZone; weight: number }> {
+  _findZoneMix(midiNote: number): ZoneMix {
+    // Built once per zone set: the mix depends only on the note, and this runs
+    // on every key press.
+    if (this._zoneMixSource !== this.zones) {
+      this._zoneMixSource = this.zones;
+      this._zoneMixTable = Array.from({ length: 128 }, (_unused, note) => this._computeZoneMix(note));
+    }
+    return this._zoneMixTable[midiNote] ?? [];
+  }
+
+  private _computeZoneMix(midiNote: number): ZoneMix {
     let below: SampleZone | undefined;
     let above: SampleZone | undefined;
     for (const zone of this.zones) {

@@ -518,7 +518,7 @@ class GoodianoApp {
 
   /** Play a note addressed by pitch, as the computer keyboard does. */
   private _handleMidiPress(midiNote: number, pressed: boolean, velocity?: number): void {
-    const key = this.layout.keys.find(candidate => candidate.midiNote === midiNote);
+    const key = this.layout.keysByMidiNote.get(midiNote);
     if (!key) return;
     this._handleKeyPress(key, pressed, velocity, 'keyboard');
   }
@@ -660,8 +660,7 @@ class GoodianoApp {
   }
 
   _getMidiNote(keyId: string): number {
-    const key = this.layout.keys.find(k => k.id === keyId);
-    return key ? key.midiNote : 60;
+    return this.layout.keysById.get(keyId)?.midiNote ?? 60;
   }
 
   private _setLoadingMessage(key: TranslationKey): void {

@@ -44,6 +44,36 @@ describe('88-key keyboard model and layout', () => {
     });
   });
 
+  it('hit tests identically to a scan over every black key', () => {
+    // The shipped implementation resolves the single candidate by arithmetic.
+    // This is the scan it replaced, kept here as the oracle.
+    const referenceHitTest = (x: number, y: number, ww: number, kh: number) => {
+      const blackWidth = ww * 0.65;
+      const blackHeight = kh * 0.6;
+      if (y < blackHeight) {
+        for (const black of layout.blackKeys) {
+          const centre = layout.blackKeyWhiteIndex[black.id] * ww;
+          if (x >= centre - blackWidth / 2 && x <= centre + blackWidth / 2 && y >= 0 && y <= blackHeight) {
+            return black;
+          }
+        }
+      }
+      const whiteIndex = Math.floor(x / ww);
+      if (whiteIndex >= 0 && whiteIndex < layout.whiteKeys.length) return layout.whiteKeys[whiteIndex];
+      return null;
+    };
+
+    for (const ww of [39, 50, 55]) {
+      const kh = 300;
+      const width = layout.whiteKeys.length * ww;
+      for (let x = -20; x < width + 20; x += 2.5) {
+        for (const y of [-5, 0, 1, kh * 0.3, kh * 0.6 - 0.01, kh * 0.6, kh * 0.9, kh]) {
+          expect(hitTest(x, y, ww, kh, layout)?.id ?? null).toBe(referenceHitTest(x, y, ww, kh)?.id ?? null);
+        }
+      }
+    }
+  });
+
   it('inverts the mini-map projection back onto white keys', () => {
     expect(whiteKeyIndexAtMiniMapX(layout, 0)).toBe(0);
     expect(whiteKeyIndexAtMiniMapX(layout, 1)).toBe(layout.whiteKeys.length - 1);
