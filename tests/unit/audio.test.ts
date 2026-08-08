@@ -76,9 +76,25 @@ function readyEngine(zones: readonly SampleZone[] = [{
     connect: ReturnType<typeof vi.fn>;
     disconnect: ReturnType<typeof vi.fn>;
   }> = [];
+  const createdFilters: Array<{
+    type: string;
+    frequency: { value: number };
+    connect: ReturnType<typeof vi.fn>;
+    disconnect: ReturnType<typeof vi.fn>;
+  }> = [];
   engine.ctx = {
     state: 'running',
     currentTime: 12,
+    createBiquadFilter: vi.fn(() => {
+      const filter = {
+        type: '',
+        frequency: { value: 0 },
+        connect: vi.fn(),
+        disconnect: vi.fn(),
+      };
+      createdFilters.push(filter);
+      return filter;
+    }),
     createBufferSource: vi.fn(() => {
       const source = {
         buffer: null,
@@ -110,7 +126,7 @@ function readyEngine(zones: readonly SampleZone[] = [{
   engine.masterGain = {} as GainNode;
   engine.sampleBuffer = {} as AudioBuffer;
   engine.zones = zones;
-  return { engine, createdSources, createdGains };
+  return { engine, createdSources, createdGains, createdFilters };
 }
 
 afterEach(() => vi.unstubAllGlobals());
@@ -254,10 +270,59 @@ describe('PianoAudioEngine playback', () => {
     expect(createdSources[0].playbackRate.value).toBeCloseTo(1); // MIDI 60 == rootKey 60
   });
 
-  it('applies velocity to each note gain', () => {
+  it('applies a perceptual velocity curve to each note gain', () => {
     const { engine, createdGains } = readyEngine();
     engine.noteOn('C4', 60, 64);
-    expect(createdGains[0].gain.value).toBeCloseTo(64 / 127);
+    // Squared, not linear: half velocity is a quarter of the amplitude.
+    expect(createdGains[0].gain.value).toBeCloseTo((64 / 127) ** 2);
+  });
+
+  it('spreads velocity over a wider dynamic range than a linear map', () => {
+    const { engine, createdGains } = readyEngine();
+    engine.noteOn('soft', 60, 40);
+    engine.noteOn('loud', 60, 120);
+
+    const ratio = createdGains[1].gain.value / createdGains[0].gain.value;
+    expect(ratio).toBeGreaterThan(120 / 40);
+  });
+
+  it('darkens soft notes and leaves the default velocity fully open', () => {
+    const { engine, createdFilters, createdGains } = readyEngine();
+
+    engine.noteOn('soft', 60, 40);
+    engine.noteOn('default', 62, 100);
+    engine.noteOn('loud', 64, 127);
+
+    expect(createdFilters.map(filter => filter.type)).toEqual(['lowpass', 'lowpass', 'lowpass']);
+    expect(createdFilters[0].frequency.value).toBeLessThan(createdFilters[1].frequency.value);
+    // At and above the default velocity the filter is open, so players without
+    // pressure or motion sensing hear an unchanged timbre.
+    expect(createdFilters[1].frequency.value).toBeCloseTo(18000);
+    expect(createdFilters[2].frequency.value).toBeCloseTo(18000);
+    // Voices feed their note's filter, which feeds the master bus.
+    expect(createdGains[0].connect).toHaveBeenCalledWith(createdFilters[0]);
+    expect(createdFilters[0].connect).toHaveBeenCalledWith(engine.masterGain);
+  });
+
+  it('disconnects the tone filter once every voice of a note has ended', () => {
+    const { engine, createdSources, createdFilters } = readyEngine();
+    engine.noteOn('C4', 60, 80);
+    engine.noteOff('C4');
+
+    createdSources[0].onended?.({} as Event);
+
+    expect(createdFilters[0].disconnect).toHaveBeenCalledOnce();
+    expect(engine.voices.size).toBe(0);
+  });
+
+  it('still plays when the filter node is unavailable', () => {
+    const { engine, createdGains } = readyEngine();
+    (engine.ctx as unknown as { createBiquadFilter?: unknown }).createBiquadFilter = undefined;
+
+    engine.noteOn('C4', 60, 80);
+
+    expect(createdGains[0].connect).toHaveBeenCalledWith(engine.masterGain);
+    expect(engine.activeNotes.has('C4')).toBe(true);
   });
 
   it('routes the master gain through a peak limiter into the destination', async () => {

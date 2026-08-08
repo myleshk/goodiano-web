@@ -5,8 +5,18 @@
 
 const DEFAULT_VELOCITY = 100;
 // The source samples reach full scale, so a chord sums well past 1.0. Leave
-// headroom here and catch the remaining peaks with the limiter below.
-const MASTER_GAIN = 0.7;
+// headroom here and catch the remaining peaks with the limiter below. The
+// velocity curve already lowers typical output, which pays for part of it.
+const MASTER_GAIN = 0.9;
+// Amplitude is roughly the square of velocity: equal steps of velocity then
+// sound like equal steps of loudness, instead of crowding everything loud.
+const VELOCITY_CURVE_EXPONENT = 2;
+// A struck string is darker when played softly. Approximating that with a
+// lowpass costs one filter per note and does far more for realism than gain
+// alone. The curve is anchored so the default velocity is fully open: players
+// without pressure or motion sensing hear exactly the timbre they heard before.
+const TONE_MIN_HZ = 2000;
+const TONE_MAX_HZ = 18000;
 const RELEASE_SECONDS = 0.2;
 // A stolen voice is cut short mid-sustain; fade it rather than click.
 const STEAL_FADE_SECONDS = 0.06;
@@ -38,6 +48,8 @@ interface Voice { source: AudioBufferSourceNode; gain: GainNode }
 interface ActiveNote {
   voices: Voice[];
   midiNote: number;
+  /** Shared tone filter the note's voices feed, when the node is available. */
+  filter: BiquadFilterNode | null;
   /** Fading out under its own release envelope. Preferred when stealing. */
   releasing: boolean;
   /** Already chosen as a steal victim; never counted or chosen twice. */
@@ -250,6 +262,28 @@ class PianoAudioEngine {
     return single ? [{ zone: single, weight: 1 }] : [];
   }
 
+  /** Map MIDI velocity onto amplitude along a perceptual curve. */
+  private _velocityGain(velocity: number): number {
+    const normalized = Math.max(0, Math.min(127, velocity)) / 127;
+    return normalized ** VELOCITY_CURVE_EXPONENT;
+  }
+
+  /**
+   * Build the note's lowpass. Openness is measured against the default
+   * velocity, so anything at or above it passes the full spectrum and only
+   * softer notes are darkened. Returns null where the node is unavailable.
+   */
+  private _createToneFilter(velocity: number): BiquadFilterNode | null {
+    const ctx = this.ctx;
+    if (!ctx || typeof ctx.createBiquadFilter !== 'function') return null;
+    const openness = Math.max(0, Math.min(1, velocity / DEFAULT_VELOCITY));
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    // Interpolate in the log domain: pitch and brightness are heard that way.
+    filter.frequency.value = TONE_MIN_HZ * (TONE_MAX_HZ / TONE_MIN_HZ) ** openness;
+    return filter;
+  }
+
   noteOn(keyId: string, midiNote: number, velocity = DEFAULT_VELOCITY): void {
     const note = { keyId, midiNote, velocity };
     this.heldNotes.set(keyId, note);
@@ -265,7 +299,10 @@ class PianoAudioEngine {
     if (mix.length === 0) return;
     this._stealVoicesForNewNote();
 
-    const velocityGain = Math.max(0, Math.min(127, velocity)) / 127;
+    const velocityGain = this._velocityGain(velocity);
+    const filter = this._createToneFilter(velocity);
+    if (filter) filter.connect(this.masterGain);
+    const voiceDestination: AudioNode = filter ?? this.masterGain;
     const voices: Voice[] = [];
     for (const { zone, weight } of mix) {
       const source = this.ctx.createBufferSource();
@@ -274,13 +311,13 @@ class PianoAudioEngine {
 
       const gainNode = this.ctx.createGain();
       gainNode.gain.value = velocityGain * weight;
-      gainNode.connect(this.masterGain);
+      gainNode.connect(voiceDestination);
       source.connect(gainNode);
       source.start(0, zone.offsetSeconds, zone.durationSeconds);
       voices.push({ source, gain: gainNode });
     }
 
-    const active: ActiveNote = { voices, midiNote: clampedNote, releasing: false, stolen: false };
+    const active: ActiveNote = { voices, midiNote: clampedNote, filter, releasing: false, stolen: false };
     // A fresh press replaces the held voice, but lets an earlier release of
     // the same pitch finish its short release envelope.
     this.activeNotes.set(keyId, active);
@@ -362,6 +399,7 @@ class PianoAudioEngine {
     voice.gain.disconnect();
     // Only retire the note once all of its crossfaded voices have ended.
     if (note.voices.length > 0) return;
+    note.filter?.disconnect();
     if (!this.voices.delete(note)) return;
     if (this.activeNotes.get(keyId) === note) this.activeNotes.delete(keyId);
   }
@@ -377,6 +415,7 @@ class PianoAudioEngine {
       voice.gain.disconnect();
     }
     note.voices = [];
+    note.filter?.disconnect();
     this.voices.delete(note);
   }
 
