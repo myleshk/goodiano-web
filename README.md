@@ -1,6 +1,6 @@
 # Goodiano
 
-A virtual piano keyboard Progressive Web App (PWA) with realistic **Yamaha U1** grand piano sound. Play a full 88-key keyboard (A0–C8) from your phone or desktop browser, with offline support, a mini-map navigator, and a premium dark-themed interface.
+A virtual piano keyboard Progressive Web App (PWA) with realistic **Yamaha U1** grand piano sound. Play a full 88-key keyboard (A0–C8) from your phone or desktop browser, with offline support, a mini-map overview, and a premium dark-themed interface.
 
 Play Goodiano at [goodiano.myles.hk](https://goodiano.myles.hk).
 
@@ -10,9 +10,9 @@ Play Goodiano at [goodiano.myles.hk](https://goodiano.myles.hk).
 - **Realistic sound** — Polyphonic playback from a compact Yamaha U1 AAC audio sprite decoded by the Web Audio API.
 - **Mobile-first** — Optimized for iPhone/iOS: notch & status-bar safe areas, `standalone` PWA mode, touch gestures.
 - **Responsive layout** — Adapts between portrait (≥10 visible white keys) and landscape (55px logical keys).
-- **Mini-map navigator** — Quickly jump across the keyboard.
+- **Mini-map overview** — Colour-coded octave blocks with an indicator showing which part of the keyboard is on screen.
 - **Offline support** — A service worker caches the app shell and lazily caches the audio sprite for offline play.
-- **Keyboard & pointer input** — Touch, mouse, and computer-keyboard input with velocity support.
+- **Pointer input** — Touch and mouse input, with velocity from touch pressure or device motion where available.
 
 ## Tech Stack
 
@@ -66,6 +66,13 @@ npm test
 npm run test:browser
 npm run build
 npm run preview
+```
+
+The browser suite drives a real WebKit build, which needs a one-time
+download of the browser and its system libraries:
+
+```bash
+npx playwright install --with-deps webkit
 ```
 
 The generated audio and zone metadata are committed, so normal development and
