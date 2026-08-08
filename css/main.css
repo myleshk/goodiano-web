@@ -23,6 +23,19 @@ html, body {
   touch-action: manipulation;
 }
 
+/* Available to assistive technology, absent from the visual design. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  clip-path: inset(50%);
+}
+
 /* --- App Shell --- */
 .app {
   display: flex;
@@ -497,6 +510,13 @@ html, body {
   display: none;
 }
 
+/* The scroll region is the keyboard's focusable control, so its focus ring has
+   to be visible against the keys rather than clipped by the overflow. */
+.keyboard-scroll:focus-visible {
+  outline: 2px solid #7db8ff;
+  outline-offset: -2px;
+}
+
 .keyboard-scroll:active {
   cursor: grabbing;
 }
@@ -693,4 +713,16 @@ html, body {
 /* --- Status bar spacer for notched iPhones --- */
 .status-bar-spacer {
   flex: 0 0 env(safe-area-inset-top, 0px);
+}
+
+/* --- Reduced motion --- */
+/* Key press feedback stays, but as an instant colour change rather than a
+   transition, and the loading overlay cuts instead of fading. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
 }

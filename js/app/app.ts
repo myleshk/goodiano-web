@@ -79,9 +79,7 @@ class GoodianoApp {
     const versionEl = document.querySelector<HTMLElement>('.app-version');
     if (versionEl) versionEl.textContent = `Goodiano · v${version}`;
     this._setupLocaleControl();
-    document.querySelector<HTMLButtonElement>('.settings-toggle')?.addEventListener('click', () => {
-      if (this.settingsPanel) this.settingsPanel.hidden = !this.settingsPanel.hidden;
-    });
+    this._setupSettingsPanel();
     const loadingOverlay = this.loadingOverlay;
     loadingOverlay?.querySelector('.loading-retry')?.addEventListener('click', () => this._retry());
     navigator.serviceWorker?.addEventListener('message', event => {
@@ -133,7 +131,10 @@ class GoodianoApp {
     this.computerKeyboard = new ComputerKeyboardController({
       onNoteOn: (midiNote, velocity) => this._handleMidiPress(midiNote, true, velocity),
       onNoteOff: midiNote => this._handleMidiPress(midiNote, false),
-      onOctaveChange: octave => this._scrollToOctave(octave),
+      onOctaveChange: octave => {
+        this._scrollToOctave(octave);
+        this._announce(t('keyboard.octave', { octave }));
+      },
       // Space is momentary, so it overrides the latched button while held and
       // hands control back on release.
       onSustainChange: held => this._setSustain(held || this._sustainLatched),
@@ -372,6 +373,34 @@ class GoodianoApp {
   }
 
   /**
+   * Keep the toggle's expanded state truthful, and let Escape close the panel
+   * from anywhere inside it, returning focus to the control that opened it.
+   */
+  private _setupSettingsPanel(): void {
+    const toggle = document.querySelector<HTMLButtonElement>('.settings-toggle');
+    const panel = this.settingsPanel;
+    if (!toggle || !panel) return;
+    const setOpen = (open: boolean): void => {
+      panel.hidden = !open;
+      toggle.setAttribute('aria-expanded', String(open));
+    };
+    // hidden is boolean | "until-found" in the DOM types, so coerce before
+    // using it as the "currently closed, so open it" signal.
+    toggle.addEventListener('click', () => setOpen(Boolean(panel.hidden)));
+    panel.addEventListener('keydown', event => {
+      if (event.key !== 'Escape') return;
+      setOpen(false);
+      toggle.focus();
+    });
+  }
+
+  /** Announce a state change that has no visible text of its own. */
+  private _announce(message: string): void {
+    const announcer = document.querySelector<HTMLElement>('.keyboard-announcer');
+    if (announcer) announcer.textContent = message;
+  }
+
+  /**
    * The pedal is reachable two ways: a latching button that suits touch, and
    * the space bar held down, which is closer to how a pedal really behaves.
    */
@@ -384,9 +413,11 @@ class GoodianoApp {
   }
 
   private _setSustain(enabled: boolean): void {
+    if (enabled === this.audio.sustainEnabled) return;
     this.audio.setSustain(enabled);
     this.settingsPanel?.querySelector<HTMLButtonElement>('.sustain-toggle')
       ?.setAttribute('aria-pressed', String(enabled));
+    this._announce(t(enabled ? 'sustain.on' : 'sustain.off'));
   }
 
   /** Drop every sounding note and the bookkeeping that tracks who held it. */
