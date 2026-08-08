@@ -88,47 +88,27 @@ class KeyboardRenderer {
     return el;
   }
 
-  _createBlackKey(key: PianoKey, _layout: KeyboardLayout): HTMLDivElement {
+  _createBlackKey(key: PianoKey, layout: KeyboardLayout): HTMLDivElement {
     const el = document.createElement('div');
     el.className = 'key-black';
     el.dataset.key = key.id;
     el.dataset.midi = String(key.midiNote);
 
-    // Position/size will be set in _updateSizes
+    // How many white keys precede this one never changes, so its horizontal
+    // position can be expressed in CSS against the current key width.
+    const whiteIndex = layout.blackKeyWhiteIndex[key.id];
+    if (whiteIndex != null) el.style.setProperty('--white-index', String(whiteIndex));
     return el;
   }
 
   /**
-   * Call after resize, orientation change, or scroll
+   * Call after resize or orientation change. Every key derives its size and
+   * position from this one custom property, so a resize is a single style
+   * write rather than one per key.
    */
   _updateSizes(): void {
     if (!this.layout) return;
-
-    const ww = this.whiteKeyWidth;
-    const kh = this.keyboardHeight;
-    const bw = ww * 0.65;
-    const bh = kh * 0.6;
-
-    // Size white keys
-    for (const wk of this.layout.whiteKeys) {
-      const el = this.keyElements.get(wk.id);
-      if (el) {
-        el.style.width = ww + 'px';
-        el.style.height = kh + 'px';
-      }
-    }
-
-    // Position and size black keys
-    for (const bk of this.layout.blackKeys) {
-      const el = this.keyElements.get(bk.id);
-      if (!el) continue;
-      const wPos = this.layout.blackKeyWhiteIndex[bk.id];
-      if (wPos == null) continue;
-      const left = wPos * ww - bw / 2;
-      el.style.left = left + 'px';
-      el.style.width = bw + 'px';
-      el.style.height = bh + 'px';
-    }
+    this.keyboardEl.style.setProperty('--white-key-width', `${this.whiteKeyWidth}px`);
   }
 
   /**

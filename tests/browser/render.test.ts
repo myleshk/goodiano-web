@@ -6,6 +6,7 @@ import '../../css/main.css';
 
 function setupRenderer() {
   const content = document.createElement('div');
+  content.className = 'keyboard-content';
   const minimap = document.createElement('div');
   const scroll = document.createElement('div');
   document.body.append(content, minimap, scroll);
@@ -31,6 +32,43 @@ describe('keyboard rendering', () => {
     expect(labelStyle.position).toBe('absolute');
     expect(labelStyle.bottom).toBe('10px');
     expect(labelStyle.left).not.toBe('');
+  });
+
+  it('draws keys where the hit test expects them, at both key widths', () => {
+    const { renderer, layout, content } = setupRenderer();
+
+    for (const whiteKeyWidth of [39, 55]) {
+      renderer.updateViewport(390, 320, whiteKeyWidth);
+      const blackWidth = whiteKeyWidth * 0.65;
+
+      // Tolerances are loose enough for WebKit's 1/64px layout quantisation.
+      const white = content.querySelector<HTMLElement>('.key-white')!;
+      expect(parseFloat(getComputedStyle(white).width)).toBeCloseTo(whiteKeyWidth, 1);
+
+      // hitTest centres a black key on the boundary after the white keys that
+      // precede it; the drawn position has to agree or touches land wrong.
+      for (const blackKey of [layout.blackKeys[0], layout.blackKeys[10], layout.blackKeys.at(-1)!]) {
+        const element = content.querySelector<HTMLElement>(`.key-black[data-key="${blackKey.id}"]`)!;
+        const style = getComputedStyle(element);
+        const centre = layout.blackKeyWhiteIndex[blackKey.id] * whiteKeyWidth;
+        expect(parseFloat(style.width)).toBeCloseTo(blackWidth, 1);
+        expect(parseFloat(style.left)).toBeCloseTo(centre - blackWidth / 2, 1);
+      }
+    }
+  });
+
+  it('resizes every key from a single style write', () => {
+    const { renderer, content } = setupRenderer();
+    const white = content.querySelector<HTMLElement>('.key-white')!;
+    const black = content.querySelector<HTMLElement>('.key-black')!;
+
+    renderer.updateViewport(390, 320, 55);
+
+    // Geometry lives in CSS: the keys carry no inline width or position.
+    expect(white.getAttribute('style')).toBeNull();
+    expect(black.style.width).toBe('');
+    expect(black.style.left).toBe('');
+    expect(content.style.getPropertyValue('--white-key-width')).toBe('55px');
   });
 
   it('places and moves the mini-map indicator using key-index coordinates', () => {

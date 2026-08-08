@@ -530,19 +530,12 @@ html, body {
 }
 
 .keyboard-content {
+  /* Set by the renderer on resize; every key is sized from it. */
+  --white-key-width: 50px;
   height: 100%;
   position: relative;
   min-width: 100%;
   background-color: #111;
-}
-
-/* --- Key Press Animation --- */
-.key-white {
-  will-change: transform, background-color;
-}
-
-.key-black {
-  will-change: transform, background-color;
 }
 
 .key-white:active,
@@ -568,6 +561,8 @@ html, body {
 
 .key-white {
   flex: 0 0 auto;
+  width: var(--white-key-width, 50px);
+  height: 100%;
   position: relative;
   cursor: pointer;
   border-radius: 0 0 6px 6px;
@@ -592,7 +587,15 @@ html, body {
 }
 
 .key-black {
+  /* Derived here rather than on the container so the key stays correct
+     wherever it is mounted, needing only the inherited white-key width. */
+  --black-key-width: calc(var(--white-key-width, 50px) * 0.65);
   position: absolute;
+  /* --white-index is stamped once per key when the keyboard is built: the
+     count of white keys before it, which is where it is centred. */
+  left: calc(var(--white-index) * var(--white-key-width, 50px) - var(--black-key-width) / 2);
+  width: var(--black-key-width);
+  height: 100%;
   background-color: #000;
   border-radius: 0 0 6px 6px;
   cursor: pointer;
