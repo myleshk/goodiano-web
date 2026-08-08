@@ -108,6 +108,38 @@ html, body {
 .loading-overlay.recoverable-error .loading-progress { display: none; }
 .loading-overlay.recoverable-error .loading-retry { display: block; }
 
+/* Removed from the layout only after the fade completes, so the overlay can be
+   brought back later (a failed offline write can be reported after dismissal). */
+.loading-overlay.dismissed { display: none; }
+
+/* Playback succeeded and only offline storage failed: shrink to a toast so the
+   keyboard stays usable. Stacks above the install promotion, which shares this
+   corner and is the only element it can overlap. */
+.loading-overlay.as-toast {
+  inset: auto calc(env(safe-area-inset-right, 0px) + 12px)
+         calc(env(safe-area-inset-bottom, 0px) + 12px) auto;
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 10px;
+  width: min(440px, calc(100vw - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px) - 24px));
+  padding: 12px 14px;
+  border: 1px solid rgba(255,255,255,0.24);
+  border-radius: 14px;
+  background: rgba(18,18,18,0.94);
+  box-shadow: 0 10px 34px rgba(0,0,0,0.5);
+  z-index: 1060;
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+}
+
+.loading-overlay.as-toast .loading-text {
+  flex: 1 1 180px;
+  color: rgba(255,255,255,0.78);
+  text-align: left;
+}
+
+.loading-overlay.as-toast .loading-retry { margin-top: 0; }
+
 @keyframes spin {
   to { transform: rotate(360deg); }
 }

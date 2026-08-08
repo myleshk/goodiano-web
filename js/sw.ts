@@ -10,6 +10,25 @@ declare const self: ServiceWorkerGlobalScope & {
 
 const AUDIO_CACHE = 'goodiano-audio-v1';
 
+/** Replace any previously cached sprite with this one. Returns false on failure. */
+async function storeAudioResponse(cache: Cache, request: Request, response: Response): Promise<boolean> {
+  try {
+    const previousSprites = await cache.keys();
+    await Promise.all(previousSprites
+      .filter(cachedRequest => cachedRequest.url !== request.url)
+      .map(cachedRequest => cache.delete(cachedRequest)));
+    await cache.put(request, response.clone());
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+async function broadcast(message: unknown): Promise<void> {
+  const clients = await self.clients.matchAll();
+  clients.forEach(client => client.postMessage(message));
+}
+
 // Navigations must check the network before the precache route can match
 // index.html. The precached shell remains the offline fallback.
 registerRoute(
@@ -34,19 +53,34 @@ registerRoute(
 
     const response = await fetch(request);
     if (!response.ok) return response;
-    try {
-      const previousSprites = await cache.keys();
-      await Promise.all(previousSprites
-        .filter(cachedRequest => cachedRequest.url !== request.url)
-        .map(cachedRequest => cache.delete(cachedRequest)));
-      await cache.put(request, response.clone());
-    } catch (_) {
-      const clients = await self.clients.matchAll();
-      clients.forEach(client => client.postMessage({ type: 'CACHE_ERROR', asset: 'audio' }));
+    if (!await storeAudioResponse(cache, request, response)) {
+      await broadcast({ type: 'CACHE_ERROR', asset: 'audio' });
     }
     return response;
   },
 );
+
+// Storing the sprite can fail on its own (quota, private mode) while playback
+// succeeds. The page keeps a retry affordance for exactly that case; without
+// this handler the retry could never reach the cache, because the audio route
+// only writes on a cache miss and the page already holds the decoded buffer.
+self.addEventListener('message', event => {
+  const data = event.data as { type?: string; url?: string } | null;
+  if (data?.type !== 'RETRY_AUDIO_CACHE' || typeof data.url !== 'string') return;
+  const url = data.url;
+  event.waitUntil((async () => {
+    try {
+      const request = new Request(url, { cache: 'reload' });
+      const cache = await caches.open(AUDIO_CACHE);
+      const response = await fetch(request);
+      if (!response.ok) throw new Error(`audio request failed (${response.status})`);
+      const stored = await storeAudioResponse(cache, request, response);
+      await broadcast({ type: stored ? 'CACHE_READY' : 'CACHE_ERROR', asset: 'audio' });
+    } catch (_) {
+      await broadcast({ type: 'CACHE_ERROR', asset: 'audio' });
+    }
+  })());
+});
 
 cleanupOutdatedCaches();
 precacheAndRoute(self.__WB_MANIFEST);

@@ -27,6 +27,8 @@ import {
 } from './i18n';
 import type { SupportedLocale, TranslationKey } from './i18n';
 
+/** Must outlast the overlay's opacity transition in css/main.css. */
+const LOADING_FADE_MS = 500;
 
 class GoodianoApp {
   keys: PianoKey[];
@@ -74,22 +76,12 @@ class GoodianoApp {
       if (this.settingsPanel) this.settingsPanel.hidden = !this.settingsPanel.hidden;
     });
     const loadingOverlay = this.loadingOverlay;
-    loadingOverlay?.querySelector('.loading-retry')?.addEventListener('click', () => {
-      loadingOverlay.classList.remove('recoverable-error');
-      const text = loadingOverlay.querySelector('.loading-text');
-      this._setLoadingMessage('loading.retrying');
-      this._loadAudio().then(() => {
-        this._hideLoading();
-        this._scrollToC4();
-      }).catch(() => {});
-    });
+    loadingOverlay?.querySelector('.loading-retry')?.addEventListener('click', () => this._retry());
     navigator.serviceWorker?.addEventListener('message', event => {
-      if (event.data?.type === 'CACHE_ERROR' && this.loadingOverlay) {
-        this._setLoadingMessage('loading.cacheFailed');
-        this.loadingOverlay.classList.add('recoverable-error');
-      } else if (event.data?.type === 'GOODIANO_DEV_SW_CLEANUP') {
-        this.reloadOnce();
-      }
+      const type = event.data?.type;
+      if (type === 'CACHE_ERROR') this._showStorageWarning();
+      else if (type === 'CACHE_READY') this._dismissLoading();
+      else if (type === 'GOODIANO_DEV_SW_CLEANUP') this.reloadOnce();
     });
 
     // Init renderer
@@ -197,15 +189,77 @@ class GoodianoApp {
   }
 
   _hideLoading() {
-    if (this.loadingOverlay) {
-      this.loadingOverlay.classList.add('hidden');
-      setTimeout(() => {
-        if (this.loadingOverlay) this.loadingOverlay.style.display = 'none';
-        this.installPromotion.markAppReady();
-      }, 500);
-    } else {
+    const overlay = this.loadingOverlay;
+    if (!overlay) {
       this.installPromotion.markAppReady();
+      return;
     }
+    // Reaching here means the audio loaded, so a pending error can only be the
+    // non-blocking storage warning. Keep its retry affordance instead of
+    // dismissing it, collapsed so it never covers the keyboard.
+    if (overlay.classList.contains('recoverable-error')) {
+      overlay.classList.add('as-toast');
+      this.installPromotion.markAppReady();
+      return;
+    }
+    this._dismissLoading();
+  }
+
+  /** Fade the overlay out and take it out of the layout once faded. */
+  private _dismissLoading(): void {
+    const overlay = this.loadingOverlay;
+    if (!overlay) return;
+    overlay.classList.remove('recoverable-error', 'as-toast');
+    overlay.classList.add('hidden');
+    setTimeout(() => {
+      overlay.classList.add('dismissed');
+      this.installPromotion.markAppReady();
+    }, LOADING_FADE_MS);
+  }
+
+  /**
+   * Surface a failed offline write. Playback is unaffected, so once the sprite
+   * has loaded this is shown as a toast rather than a blocking overlay — and it
+   * can reappear after the overlay was already dismissed.
+   */
+  private _showStorageWarning(): void {
+    const overlay = this.loadingOverlay;
+    if (!overlay) return;
+    this._setLoadingMessage('loading.cacheFailed');
+    overlay.classList.remove('hidden', 'dismissed');
+    overlay.classList.add('recoverable-error');
+    overlay.classList.toggle('as-toast', this.audio.loaded);
+  }
+
+  private _retry(): void {
+    const overlay = this.loadingOverlay;
+    if (!overlay) return;
+    // A loaded sprite means only the offline copy failed: ask the worker to
+    // store it again rather than re-downloading and re-decoding the audio.
+    const storageOnly = this.audio.loaded;
+    overlay.classList.remove('recoverable-error');
+    if (!storageOnly) overlay.classList.remove('as-toast');
+    this._setLoadingMessage('loading.retrying');
+    if (storageOnly) {
+      this._retryAudioStorage();
+      return;
+    }
+    this._loadAudio().then(() => {
+      this._hideLoading();
+      this._scrollToC4();
+    }).catch(() => {});
+  }
+
+  private _retryAudioStorage(): void {
+    const controller = navigator.serviceWorker?.controller;
+    if (!controller) {
+      this._showStorageWarning();
+      return;
+    }
+    controller.postMessage({
+      type: 'RETRY_AUDIO_CACHE',
+      url: new URL(audioSpriteUrl, document.baseURI).href,
+    });
   }
 
   _updateLoadingProgress(progress: number): void {
