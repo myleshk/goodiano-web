@@ -6,10 +6,11 @@ let active: ComputerKeyboardController | null = null;
 function attached() {
   const onNoteOn = vi.fn();
   const onNoteOff = vi.fn();
-  const keyboard = new ComputerKeyboardController({ onNoteOn, onNoteOff });
+  const onSustainChange = vi.fn();
+  const keyboard = new ComputerKeyboardController({ onNoteOn, onNoteOff, onSustainChange });
   keyboard.attach();
   active = keyboard;
-  return { keyboard, onNoteOn, onNoteOff };
+  return { keyboard, onNoteOn, onNoteOff, onSustainChange };
 }
 
 afterEach(() => {
@@ -79,6 +80,29 @@ describe('computer keyboard input', () => {
     document.dispatchEvent(new Event('visibilitychange'));
 
     expect(onNoteOff.mock.calls.map(call => call[0]).toSorted()).toEqual([60, 72]);
+  });
+
+  it('holds the pedal for as long as space is down', () => {
+    const { onSustainChange, onNoteOn } = attached();
+
+    const down = new KeyboardEvent('keydown', { code: 'Space', cancelable: true });
+    window.dispatchEvent(down);
+    // Space would otherwise scroll the page out from under the keyboard.
+    expect(down.defaultPrevented).toBe(true);
+    window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Space', repeat: true }));
+    window.dispatchEvent(new KeyboardEvent('keyup', { code: 'Space' }));
+
+    expect(onSustainChange.mock.calls).toEqual([[true], [false]]);
+    expect(onNoteOn).not.toHaveBeenCalled();
+  });
+
+  it('lifts the pedal when the page is hidden mid-press', () => {
+    const { onSustainChange } = attached();
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Space' }));
+    document.dispatchEvent(new Event('visibilitychange'));
+
+    expect(onSustainChange).toHaveBeenLastCalledWith(false);
   });
 
   it('stops sending notes once destroyed', () => {

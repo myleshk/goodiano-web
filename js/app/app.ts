@@ -57,6 +57,7 @@ class GoodianoApp {
   private readonly _pressSources = new Map<string, Set<PressSource>>();
   private readonly installPromotion: InstallPromotionController;
   computerKeyboard: ComputerKeyboardController | null = null;
+  private _sustainLatched = false;
 
   constructor(installPromotion: InstallPromotionController = new InstallPromotionController()) {
     this.installPromotion = installPromotion;
@@ -133,8 +134,12 @@ class GoodianoApp {
       onNoteOn: (midiNote, velocity) => this._handleMidiPress(midiNote, true, velocity),
       onNoteOff: midiNote => this._handleMidiPress(midiNote, false),
       onOctaveChange: octave => this._scrollToOctave(octave),
+      // Space is momentary, so it overrides the latched button while held and
+      // hands control back on release.
+      onSustainChange: held => this._setSustain(held || this._sustainLatched),
     });
     this.computerKeyboard.attach();
+    this._setupSustainControl();
 
     this.input.setConverters(
       (cx, cy) => this._screenToKeyboard(cx, cy),
@@ -366,11 +371,31 @@ class GoodianoApp {
     this.renderer.setPressed(key.id, false);
   }
 
+  /**
+   * The pedal is reachable two ways: a latching button that suits touch, and
+   * the space bar held down, which is closer to how a pedal really behaves.
+   */
+  private _setupSustainControl(): void {
+    const toggle = this.settingsPanel?.querySelector<HTMLButtonElement>('.sustain-toggle');
+    toggle?.addEventListener('click', () => {
+      this._sustainLatched = !this._sustainLatched;
+      this._setSustain(this._sustainLatched);
+    });
+  }
+
+  private _setSustain(enabled: boolean): void {
+    this.audio.setSustain(enabled);
+    this.settingsPanel?.querySelector<HTMLButtonElement>('.sustain-toggle')
+      ?.setAttribute('aria-pressed', String(enabled));
+  }
+
   /** Drop every sounding note and the bookkeeping that tracks who held it. */
   private _releaseAllNotes(): void {
     this.input?.releaseAll();
     this.computerKeyboard?.releaseAll();
     this._pressSources.clear();
+    this._sustainLatched = false;
+    this._setSustain(false);
     this.audio.allNotesOff();
   }
 

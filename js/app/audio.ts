@@ -52,6 +52,8 @@ interface ActiveNote {
   filter: BiquadFilterNode | null;
   /** Fading out under its own release envelope. Preferred when stealing. */
   releasing: boolean;
+  /** Released by the player but held sounding by the pedal. */
+  sustained: boolean;
   /** Already chosen as a steal victim; never counted or chosen twice. */
   stolen: boolean;
 }
@@ -81,6 +83,9 @@ class PianoAudioEngine {
   activeNotes = new Map<string, ActiveNote>();
   queuedNotes = new Map<string, NoteRequest>();
   heldNotes = new Map<string, NoteRequest>();
+  /** Notes the player has let go of that the pedal is holding open. */
+  sustainedNotes = new Map<string, ActiveNote>();
+  sustainEnabled = false;
   loaded = false;
   loading = false;
   state: AudioEngineState = 'loading';
@@ -317,7 +322,14 @@ class PianoAudioEngine {
       voices.push({ source, gain: gainNode });
     }
 
-    const active: ActiveNote = { voices, midiNote: clampedNote, filter, releasing: false, stolen: false };
+    const active: ActiveNote = {
+      voices,
+      midiNote: clampedNote,
+      filter,
+      releasing: false,
+      sustained: false,
+      stolen: false,
+    };
     // A fresh press replaces the held voice, but lets an earlier release of
     // the same pitch finish its short release envelope.
     this.activeNotes.set(keyId, active);
@@ -349,20 +361,29 @@ class PianoAudioEngine {
       for (const [keyId, note] of this.activeNotes) {
         if (note === victim) this.activeNotes.delete(keyId);
       }
+      for (const [keyId, note] of this.sustainedNotes) {
+        if (note === victim) this.sustainedNotes.delete(keyId);
+      }
       this._fadeOut(victim, STEAL_FADE_SECONDS);
       sounding -= 1;
     }
   }
 
+  /**
+   * Pick the least missed voice: one already fading, then one the pedal alone
+   * is holding, then the oldest still under a finger.
+   */
   private _nextStealVictim(): ActiveNote | null {
-    let oldestSounding: ActiveNote | null = null;
+    let oldestSustained: ActiveNote | null = null;
+    let oldestHeld: ActiveNote | null = null;
     // Set iteration follows insertion order, so the first match is the oldest.
     for (const note of this.voices) {
       if (note.stolen) continue;
       if (note.releasing) return note;
-      oldestSounding ??= note;
+      if (note.sustained) oldestSustained ??= note;
+      else oldestHeld ??= note;
     }
-    return oldestSounding;
+    return oldestSustained ?? oldestHeld;
   }
 
   /** Ramp a note to silence and stop its sources at the end of the ramp. */
@@ -389,7 +410,30 @@ class PianoAudioEngine {
     const note = this.activeNotes.get(keyId);
     this.activeNotes.delete(keyId);
     if (!note || !this.ctx) return;
+    if (this.sustainEnabled) {
+      // The damper stays off the string: keep it sounding until the pedal
+      // lifts. A key struck twice under the pedal retires its earlier voice
+      // so one key cannot accumulate them without bound.
+      const previous = this.sustainedNotes.get(keyId);
+      if (previous && previous !== note) this._fadeOut(previous, RELEASE_SECONDS);
+      note.sustained = true;
+      this.sustainedNotes.set(keyId, note);
+      return;
+    }
     this._fadeOut(note, RELEASE_SECONDS);
+  }
+
+  /**
+   * Raise or lower the sustain pedal. Lowering it only changes what happens to
+   * later releases; raising it releases everything the pedal was holding, while
+   * keys still physically down keep sounding.
+   */
+  setSustain(enabled: boolean): void {
+    if (enabled === this.sustainEnabled) return;
+    this.sustainEnabled = enabled;
+    if (enabled) return;
+    for (const note of this.sustainedNotes.values()) this._fadeOut(note, RELEASE_SECONDS);
+    this.sustainedNotes.clear();
   }
 
   _finishVoice(keyId: string, note: ActiveNote, voice: Voice): void {
@@ -402,6 +446,7 @@ class PianoAudioEngine {
     note.filter?.disconnect();
     if (!this.voices.delete(note)) return;
     if (this.activeNotes.get(keyId) === note) this.activeNotes.delete(keyId);
+    if (this.sustainedNotes.get(keyId) === note) this.sustainedNotes.delete(keyId);
   }
 
   _stopVoice(note: ActiveNote): void {
@@ -422,6 +467,7 @@ class PianoAudioEngine {
   allNotesOff(): void {
     this.heldNotes.clear();
     this.queuedNotes.clear();
+    this.sustainedNotes.clear();
     // oxlint-disable-next-line no-useless-spread -- _stopVoice deletes from this.voices while iterating.
     for (const note of [...this.voices]) this._stopVoice(note);
     this.activeNotes.clear();

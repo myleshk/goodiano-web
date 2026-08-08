@@ -347,6 +347,12 @@ html, body {
 
 .settings-action[hidden] { display: none; }
 
+.settings-action[aria-pressed="true"] {
+  color: #111;
+  background: rgba(255,255,255,0.92);
+  border-color: rgba(255,255,255,0.92);
+}
+
 .settings-action {
   display: block;
   width: 100%;

@@ -21,6 +21,7 @@ const KEY_CODE_SEMITONES: Readonly<Record<string, number>> = {
 
 const OCTAVE_DOWN_CODES = new Set(['ArrowLeft']);
 const OCTAVE_UP_CODES = new Set(['ArrowRight']);
+const SUSTAIN_CODES = new Set(['Space']);
 
 const DEFAULT_OCTAVE = 4;
 const MIN_OCTAVE = 0;
@@ -37,6 +38,7 @@ interface ComputerKeyboardCallbacks {
   onNoteOn?: (midiNote: number, velocity: number) => void;
   onNoteOff?: (midiNote: number) => void;
   onOctaveChange?: (octave: number) => void;
+  onSustainChange?: (held: boolean) => void;
 }
 
 /** True when the event belongs to a control the user is typing or tabbing in. */
@@ -59,6 +61,8 @@ class ComputerKeyboardController {
   private readonly onNoteOn: NonNullable<ComputerKeyboardCallbacks['onNoteOn']>;
   private readonly onNoteOff: NonNullable<ComputerKeyboardCallbacks['onNoteOff']>;
   private readonly onOctaveChange: NonNullable<ComputerKeyboardCallbacks['onOctaveChange']>;
+  private readonly onSustainChange: NonNullable<ComputerKeyboardCallbacks['onSustainChange']>;
+  private sustainHeld = false;
   private readonly target: EventTarget;
   private readonly handleKeyDown = (event: KeyboardEvent): void => this._onKeyDown(event);
   private readonly handleKeyUp = (event: KeyboardEvent): void => this._onKeyUp(event);
@@ -70,6 +74,7 @@ class ComputerKeyboardController {
     this.onNoteOn = callbacks.onNoteOn ?? (() => {});
     this.onNoteOff = callbacks.onNoteOff ?? (() => {});
     this.onOctaveChange = callbacks.onOctaveChange ?? (() => {});
+    this.onSustainChange = callbacks.onSustainChange ?? (() => {});
     this.target = target;
   }
 
@@ -114,11 +119,24 @@ class ComputerKeyboardController {
   releaseAll(): void {
     for (const midiNote of this.sounding.values()) this.onNoteOff(midiNote);
     this.sounding.clear();
+    this._setSustainHeld(false);
+  }
+
+  private _setSustainHeld(held: boolean): void {
+    if (held === this.sustainHeld) return;
+    this.sustainHeld = held;
+    this.onSustainChange(held);
   }
 
   private _onKeyDown(event: KeyboardEvent): void {
     // Leave browser and OS shortcuts alone, and stay out of form controls.
     if (event.ctrlKey || event.metaKey || isEditingTarget(event.target)) return;
+    if (SUSTAIN_CODES.has(event.code)) {
+      // Space would otherwise scroll the page under the keyboard.
+      event.preventDefault();
+      this._setSustainHeld(true);
+      return;
+    }
     if (OCTAVE_DOWN_CODES.has(event.code)) {
       event.preventDefault();
       this.setOctave(this.octave - 1);
@@ -139,6 +157,10 @@ class ComputerKeyboardController {
   }
 
   private _onKeyUp(event: KeyboardEvent): void {
+    if (SUSTAIN_CODES.has(event.code)) {
+      this._setSustainHeld(false);
+      return;
+    }
     const midiNote = this.sounding.get(event.code);
     if (midiNote === undefined) return;
     this.sounding.delete(event.code);

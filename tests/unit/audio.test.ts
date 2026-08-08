@@ -391,6 +391,68 @@ describe('PianoAudioEngine playback', () => {
     expect(sounding).toBeLessThanOrEqual(32);
   });
 
+  it('holds released notes open while the pedal is down', () => {
+    const { engine, createdGains } = readyEngine();
+    engine.setSustain(true);
+    engine.noteOn('C4', 60, 100);
+
+    engine.noteOff('C4');
+
+    // No release ramp yet: the damper is still off the string.
+    expect(createdGains[0].gain.linearRampToValueAtTime).not.toHaveBeenCalled();
+    expect(engine.voices.size).toBe(1);
+    expect(engine.sustainedNotes.has('C4')).toBe(true);
+    expect(engine.activeNotes.has('C4')).toBe(false);
+
+    engine.setSustain(false);
+
+    expect(createdGains[0].gain.linearRampToValueAtTime).toHaveBeenCalledWith(0, 12.2);
+    expect(engine.sustainedNotes.size).toBe(0);
+  });
+
+  it('leaves keys that are still down sounding when the pedal lifts', () => {
+    const { engine, createdGains } = readyEngine();
+    engine.setSustain(true);
+    engine.noteOn('C4', 60, 100);
+    engine.noteOn('E4', 64, 100);
+    engine.noteOff('C4');
+
+    engine.setSustain(false);
+
+    expect(createdGains[0].gain.linearRampToValueAtTime).toHaveBeenCalledWith(0, 12.2);
+    expect(createdGains[1].gain.linearRampToValueAtTime).not.toHaveBeenCalled();
+    expect(engine.activeNotes.has('E4')).toBe(true);
+  });
+
+  it('retires the earlier voice when one key is struck twice under the pedal', () => {
+    const { engine, createdGains } = readyEngine();
+    engine.setSustain(true);
+
+    engine.noteOn('C4', 60, 100);
+    engine.noteOff('C4');
+    engine.noteOn('C4', 60, 100);
+    engine.noteOff('C4');
+
+    expect(createdGains[0].gain.linearRampToValueAtTime).toHaveBeenCalledWith(0, 12.2);
+    expect(createdGains[1].gain.linearRampToValueAtTime).not.toHaveBeenCalled();
+    expect(engine.sustainedNotes.get('C4')).toBeDefined();
+    expect(engine.sustainedNotes.size).toBe(1);
+  });
+
+  it('steals a pedal-held voice before one still under a finger', () => {
+    const { engine, createdGains } = readyEngine();
+    engine.setSustain(true);
+    for (let index = 0; index < 32; index += 1) engine.noteOn(`k${index}`, 40 + index);
+    // k5 is now held by the pedal alone; k0 is still down.
+    engine.noteOff('k5');
+
+    engine.noteOn('fresh', 90);
+
+    expect(createdGains[5].gain.linearRampToValueAtTime).toHaveBeenCalledWith(0, 12.06);
+    expect(createdGains[0].gain.linearRampToValueAtTime).not.toHaveBeenCalled();
+    expect(engine.sustainedNotes.has('k5')).toBe(false);
+  });
+
   it('queues only held notes while loading and clears them safely', () => {
     const engine = new PianoAudioEngine();
     engine.noteOn('C4', 60, 127);
