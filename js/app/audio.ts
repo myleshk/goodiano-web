@@ -4,9 +4,23 @@
  */
 
 const DEFAULT_VELOCITY = 100;
-// Keep headroom for velocity differences. The source samples reach full scale.
-const MASTER_GAIN = 1;
+// The source samples reach full scale, so a chord sums well past 1.0. Leave
+// headroom here and catch the remaining peaks with the limiter below.
+const MASTER_GAIN = 0.7;
 const RELEASE_SECONDS = 0.2;
+// A stolen voice is cut short mid-sustain; fade it rather than click.
+const STEAL_FADE_SECONDS = 0.06;
+// Ten fingers plus sustained releases stay well inside this. The cap exists to
+// bound pathological input such as a fast glissando.
+const MAX_POLYPHONY = 32;
+// A high ratio with a low knee turns the compressor into a peak limiter: notes
+// below the threshold pass untouched, and stacked voices are held just short of
+// clipping instead of being distorted by the output stage.
+const LIMITER_THRESHOLD_DB = -6;
+const LIMITER_KNEE_DB = 0;
+const LIMITER_RATIO = 20;
+const LIMITER_ATTACK_SECONDS = 0.003;
+const LIMITER_RELEASE_SECONDS = 0.25;
 const AUDIO_FETCH_TIMEOUT_MS = 30_000;
 const DOWNLOAD_PROGRESS_SHARE = 0.9;
 
@@ -21,7 +35,14 @@ interface SampleZone {
 }
 interface NoteRequest { keyId: string; midiNote: number; velocity: number }
 interface Voice { source: AudioBufferSourceNode; gain: GainNode }
-interface ActiveNote { voices: Voice[]; midiNote: number }
+interface ActiveNote {
+  voices: Voice[];
+  midiNote: number;
+  /** Fading out under its own release envelope. Preferred when stealing. */
+  releasing: boolean;
+  /** Already chosen as a steal victim; never counted or chosen twice. */
+  stolen: boolean;
+}
 interface WebKitAudioWindow extends Window { webkitAudioContext?: typeof AudioContext }
 interface ExperimentalAudioSession { type: 'playback' }
 interface NavigatorWithAudioSession extends Navigator { audioSession?: ExperimentalAudioSession }
@@ -40,6 +61,7 @@ function configurePlaybackAudioSession(): void {
 class PianoAudioEngine {
   ctx: AudioContext | null = null;
   masterGain: GainNode | null = null;
+  limiter: DynamicsCompressorNode | null = null;
   sampleBuffer: AudioBuffer | null = null;
   zones: readonly SampleZone[] = [];
   /** Voices still sounding, including notes in their release envelope. */
@@ -63,11 +85,29 @@ class PianoAudioEngine {
     this.ctx = new AudioContextClass();
     this.masterGain = this.ctx.createGain();
     this.masterGain.gain.value = MASTER_GAIN;
-    this.masterGain.connect(this.ctx.destination);
+    this.limiter = this._createLimiter(this.ctx);
+    if (this.limiter) {
+      this.masterGain.connect(this.limiter);
+      this.limiter.connect(this.ctx.destination);
+    } else {
+      this.masterGain.connect(this.ctx.destination);
+    }
     this.ctx.onstatechange = () => this._handleStateChange();
     this.state = this.ctx.state === 'running' && this.loaded ? 'ready' :
       this.ctx.state === 'running' ? 'loading' : 'awaitingGesture';
     return this.ctx;
+  }
+
+  /** Build the output limiter, or null where the node is unavailable. */
+  private _createLimiter(ctx: AudioContext): DynamicsCompressorNode | null {
+    if (typeof ctx.createDynamicsCompressor !== 'function') return null;
+    const limiter = ctx.createDynamicsCompressor();
+    limiter.threshold.value = LIMITER_THRESHOLD_DB;
+    limiter.knee.value = LIMITER_KNEE_DB;
+    limiter.ratio.value = LIMITER_RATIO;
+    limiter.attack.value = LIMITER_ATTACK_SECONDS;
+    limiter.release.value = LIMITER_RELEASE_SECONDS;
+    return limiter;
   }
 
   /**
@@ -223,6 +263,7 @@ class PianoAudioEngine {
     const clampedNote = Math.max(0, Math.min(127, midiNote));
     const mix = this._findZoneMix(clampedNote);
     if (mix.length === 0) return;
+    this._stealVoicesForNewNote();
 
     const velocityGain = Math.max(0, Math.min(127, velocity)) / 127;
     const voices: Voice[] = [];
@@ -239,7 +280,7 @@ class PianoAudioEngine {
       voices.push({ source, gain: gainNode });
     }
 
-    const active: ActiveNote = { voices, midiNote: clampedNote };
+    const active: ActiveNote = { voices, midiNote: clampedNote, releasing: false, stolen: false };
     // A fresh press replaces the held voice, but lets an earlier release of
     // the same pitch finish its short release envelope.
     this.activeNotes.set(keyId, active);
@@ -255,25 +296,63 @@ class PianoAudioEngine {
     for (const note of this.queuedNotes.values()) this._startNote(note);
   }
 
+  /**
+   * Keep the sounding voice count under the cap before adding another note.
+   * Voices already in their release envelope go first, oldest before newest,
+   * so a held chord survives a fast run over it.
+   */
+  private _stealVoicesForNewNote(): void {
+    let sounding = 0;
+    for (const note of this.voices) if (!note.stolen) sounding += 1;
+
+    while (sounding >= MAX_POLYPHONY) {
+      const victim = this._nextStealVictim();
+      if (!victim) return;
+      victim.stolen = true;
+      for (const [keyId, note] of this.activeNotes) {
+        if (note === victim) this.activeNotes.delete(keyId);
+      }
+      this._fadeOut(victim, STEAL_FADE_SECONDS);
+      sounding -= 1;
+    }
+  }
+
+  private _nextStealVictim(): ActiveNote | null {
+    let oldestSounding: ActiveNote | null = null;
+    // Set iteration follows insertion order, so the first match is the oldest.
+    for (const note of this.voices) {
+      if (note.stolen) continue;
+      if (note.releasing) return note;
+      oldestSounding ??= note;
+    }
+    return oldestSounding;
+  }
+
+  /** Ramp a note to silence and stop its sources at the end of the ramp. */
+  private _fadeOut(note: ActiveNote, seconds: number): void {
+    if (!this.ctx) return;
+    note.releasing = true;
+    const now = this.ctx.currentTime;
+    const end = now + seconds;
+    for (const voice of note.voices) {
+      voice.gain.gain.cancelScheduledValues(now);
+      voice.gain.gain.setValueAtTime(voice.gain.gain.value, now);
+      voice.gain.gain.linearRampToValueAtTime(0, end);
+      try {
+        voice.source.stop(end);
+      } catch (_) {
+        // The source may already have reached its natural end.
+      }
+    }
+  }
+
   noteOff(keyId: string): void {
     this.heldNotes.delete(keyId);
     this.queuedNotes.delete(keyId);
     const note = this.activeNotes.get(keyId);
     this.activeNotes.delete(keyId);
     if (!note || !this.ctx) return;
-
-    const now = this.ctx.currentTime;
-    const releaseEnd = now + RELEASE_SECONDS;
-    for (const voice of note.voices) {
-      voice.gain.gain.cancelScheduledValues(now);
-      voice.gain.gain.setValueAtTime(voice.gain.gain.value, now);
-      voice.gain.gain.linearRampToValueAtTime(0, releaseEnd);
-      try {
-        voice.source.stop(releaseEnd);
-      } catch (_) {
-        // The source may already have reached its natural end.
-      }
-    }
+    this._fadeOut(note, RELEASE_SECONDS);
   }
 
   _finishVoice(keyId: string, note: ActiveNote, voice: Voice): void {

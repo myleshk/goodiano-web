@@ -16,6 +16,23 @@ class FakeAudioContext {
   }
 }
 
+/** A context that also offers the limiter node, so routing can be asserted. */
+class LimiterAudioContext extends FakeAudioContext {
+  compressor = {
+    threshold: { value: 0 },
+    knee: { value: -1 },
+    ratio: { value: 0 },
+    attack: { value: 0 },
+    release: { value: 0 },
+    connect: vi.fn(),
+    disconnect: vi.fn(),
+  };
+
+  createDynamicsCompressor() {
+    return this.compressor;
+  }
+}
+
 function responseWith(bytes = new Uint8Array([1, 2, 3, 4])) {
   return {
     ok: true,
@@ -241,6 +258,72 @@ describe('PianoAudioEngine playback', () => {
     const { engine, createdGains } = readyEngine();
     engine.noteOn('C4', 60, 64);
     expect(createdGains[0].gain.value).toBeCloseTo(64 / 127);
+  });
+
+  it('routes the master gain through a peak limiter into the destination', async () => {
+    vi.stubGlobal('navigator', {});
+    vi.stubGlobal('window', { AudioContext: LimiterAudioContext });
+
+    const engine = new PianoAudioEngine();
+    await engine.init();
+    const ctx = engine.ctx as unknown as LimiterAudioContext;
+
+    // Chords sum well past full scale, so the pre-limiter stage keeps headroom.
+    expect(engine.masterGain!.gain.value).toBeLessThan(1);
+    expect(engine.limiter).toBe(ctx.compressor);
+    expect(engine.masterGain!.connect).toHaveBeenCalledWith(ctx.compressor);
+    expect(ctx.compressor.connect).toHaveBeenCalledWith(ctx.destination);
+    // A high ratio over a hard knee is what makes it limit rather than compress.
+    expect(ctx.compressor.ratio.value).toBeGreaterThanOrEqual(20);
+    expect(ctx.compressor.knee.value).toBe(0);
+    expect(ctx.compressor.threshold.value).toBeLessThan(0);
+  });
+
+  it('connects straight to the destination when the limiter node is missing', async () => {
+    vi.stubGlobal('navigator', {});
+    vi.stubGlobal('window', { AudioContext: FakeAudioContext });
+
+    const engine = new PianoAudioEngine();
+    await engine.init();
+
+    expect(engine.limiter).toBeNull();
+    expect(engine.masterGain!.connect).toHaveBeenCalledWith(engine.ctx!.destination);
+  });
+
+  it('steals a releasing voice before a held one at the polyphony cap', () => {
+    const { engine, createdGains, createdSources } = readyEngine();
+    for (let index = 0; index < 32; index += 1) engine.noteOn(`k${index}`, 40 + index);
+    expect(engine.voices.size).toBe(32);
+
+    engine.noteOff('k1');
+    engine.noteOn('fresh', 90);
+
+    // k1 was already fading; it loses its voice rather than the held k0.
+    expect(createdGains[1].gain.linearRampToValueAtTime).toHaveBeenLastCalledWith(0, 12.06);
+    expect(createdGains[0].gain.linearRampToValueAtTime).not.toHaveBeenCalled();
+    expect(engine.activeNotes.has('k0')).toBe(true);
+    expect(engine.activeNotes.has('fresh')).toBe(true);
+    expect(createdSources).toHaveLength(33);
+  });
+
+  it('steals the oldest held voice when nothing is releasing', () => {
+    const { engine, createdGains } = readyEngine();
+    for (let index = 0; index < 32; index += 1) engine.noteOn(`k${index}`, 40 + index);
+
+    engine.noteOn('fresh', 90);
+
+    expect(engine.activeNotes.has('k0')).toBe(false);
+    expect(engine.activeNotes.has('k1')).toBe(true);
+    expect(createdGains[0].gain.linearRampToValueAtTime).toHaveBeenCalledWith(0, 12.06);
+  });
+
+  it('bounds sounding voices through a long glissando', () => {
+    const { engine } = readyEngine();
+    for (let index = 0; index < 200; index += 1) engine.noteOn(`g${index}`, 30 + (index % 50));
+
+    let sounding = 0;
+    for (const note of engine.voices) if (!note.stolen) sounding += 1;
+    expect(sounding).toBeLessThanOrEqual(32);
   });
 
   it('queues only held notes while loading and clears them safely', () => {
