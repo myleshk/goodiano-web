@@ -17,6 +17,7 @@ import type { PianoKey } from './model';
 import { audioSpriteUrl, version } from 'virtual:goodiano-assets';
 import { registerServiceWorker, RELOAD_MARKER } from './service-worker';
 import { InstallPromotionController } from './install-promotion';
+import { ComputerKeyboardController } from './computer-keyboard';
 import {
   getLocale,
   initializeLocalization,
@@ -29,6 +30,9 @@ import type { SupportedLocale, TranslationKey } from './i18n';
 
 /** Must outlast the overlay's opacity transition in css/main.css. */
 const LOADING_FADE_MS = 500;
+
+/** What is holding a key down. A note ends when the last of them releases. */
+type PressSource = 'pointer' | 'keyboard';
 
 class GoodianoApp {
   keys: PianoKey[];
@@ -50,7 +54,9 @@ class GoodianoApp {
   private _loadingMessage: TranslationKey = 'loading.initial';
   private _lastVelocityDebug: { key: InputKey; velocity: number } | null = null;
   private _resizeObserver: ResizeObserver | null = null;
+  private readonly _pressSources = new Map<string, Set<PressSource>>();
   private readonly installPromotion: InstallPromotionController;
+  computerKeyboard: ComputerKeyboardController | null = null;
 
   constructor(installPromotion: InstallPromotionController = new InstallPromotionController()) {
     this.installPromotion = installPromotion;
@@ -123,6 +129,13 @@ class GoodianoApp {
     this.settingsPanel?.querySelector<HTMLButtonElement>('.app-reload-button')
       ?.addEventListener('click', () => this.reloadApp());
 
+    this.computerKeyboard = new ComputerKeyboardController({
+      onNoteOn: (midiNote, velocity) => this._handleMidiPress(midiNote, true, velocity),
+      onNoteOff: midiNote => this._handleMidiPress(midiNote, false),
+      onOctaveChange: octave => this._scrollToOctave(octave),
+    });
+    this.computerKeyboard.attach();
+
     this.input.setConverters(
       (cx, cy) => this._screenToKeyboard(cx, cy),
       (x, y) => hitTest(x, y, this.whiteKeyWidth, this.keyboardHeight, this.layout)
@@ -148,18 +161,12 @@ class GoodianoApp {
       document.addEventListener(eventName, resumeOnGesture, { capture: true, passive: true });
     }
     document.addEventListener('visibilitychange', () => {
-      if (document.hidden) {
-        this.input?.releaseAll();
-        this.audio.allNotesOff();
-      }
+      if (document.hidden) this._releaseAllNotes();
       // On show: do not call resume() here — visibilitychange is not a user
       // gesture on iOS, so it would be ignored. The gesture listener above
       // resumes on the next tap.
     });
-    window.addEventListener('pagehide', () => {
-      this.input?.releaseAll();
-      this.audio.allNotesOff();
-    });
+    window.addEventListener('pagehide', () => this._releaseAllNotes());
   }
 
   private _requiredElement(selector: string): HTMLElement {
@@ -274,9 +281,24 @@ class GoodianoApp {
   }
 
   _scrollToC4() {
+    this._scrollToWhiteKeyIndex(findMiddleCIndex(this.layout));
+  }
+
+  /**
+   * Follow an octave shift with the view. The computer keyboard spans two
+   * octaves upward from its base, so centring the upper C keeps both rows on
+   * screen rather than pushing the higher row off the right edge.
+   */
+  private _scrollToOctave(octave: number): void {
+    const index = ['C' + (octave + 1), 'C' + octave]
+      .map(id => this.layout.whiteKeys.findIndex(key => key.id === id))
+      .find(found => found >= 0);
+    this._scrollToWhiteKeyIndex(index ?? findMiddleCIndex(this.layout));
+  }
+
+  private _scrollToWhiteKeyIndex(whiteKeyIndex: number): void {
     if (!this.input || !this.renderer) return;
-    const c4Idx = findMiddleCIndex(this.layout);
-    const target = scrollToKey(c4Idx, this.whiteKeyWidth, this.viewportWidth, this.maxScroll);
+    const target = scrollToKey(whiteKeyIndex, this.whiteKeyWidth, this.viewportWidth, this.maxScroll);
     this.input.setScrollOffset(target);
     this.scrollContainer.scrollLeft = target;
     this.renderer.updateMiniMap(target);
@@ -318,16 +340,45 @@ class GoodianoApp {
     };
   }
 
-  _handleKeyPress(key: InputKey, pressed: boolean, velocity?: number): void {
+  /**
+   * Start or stop a note. Pointers and the computer keyboard can hold the same
+   * key at once, so a note only stops once every source has let go of it.
+   */
+  _handleKeyPress(key: InputKey, pressed: boolean, velocity?: number, source: PressSource = 'pointer'): void {
     if (!this.renderer) return;
+    const sources = this._pressSources.get(key.id) ?? new Set<PressSource>();
     if (pressed) {
+      const alreadySounding = sources.size > 0;
+      sources.add(source);
+      this._pressSources.set(key.id, sources);
       this.audio.ensureRunning();
-      this.audio.noteOn(key.id, this._getMidiNote(key.id), velocity);
       this._updateVelocityDebug(key, velocity ?? DEFAULT_VELOCITY);
-    } else {
-      this.audio.noteOff(key.id);
+      // A key that is already down cannot be struck again.
+      if (alreadySounding) return;
+      this.audio.noteOn(key.id, this._getMidiNote(key.id), velocity);
+      this.renderer.setPressed(key.id, true);
+      return;
     }
-    this.renderer.setPressed(key.id, pressed);
+    sources.delete(source);
+    if (sources.size > 0) return;
+    this._pressSources.delete(key.id);
+    this.audio.noteOff(key.id);
+    this.renderer.setPressed(key.id, false);
+  }
+
+  /** Drop every sounding note and the bookkeeping that tracks who held it. */
+  private _releaseAllNotes(): void {
+    this.input?.releaseAll();
+    this.computerKeyboard?.releaseAll();
+    this._pressSources.clear();
+    this.audio.allNotesOff();
+  }
+
+  /** Play a note addressed by pitch, as the computer keyboard does. */
+  private _handleMidiPress(midiNote: number, pressed: boolean, velocity?: number): void {
+    const key = this.layout.keys.find(candidate => candidate.midiNote === midiNote);
+    if (!key) return;
+    this._handleKeyPress(key, pressed, velocity, 'keyboard');
   }
 
   _updateVelocityDebug(key: InputKey, velocity: number): void {

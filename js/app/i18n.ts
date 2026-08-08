@@ -62,6 +62,7 @@ const en = {
   'debug.source.default': 'default',
   'actions.reload': 'Reload App',
   'keyboard.label': 'Piano keyboard',
+  'keyboard.hint': 'Computer keyboard: Z–M and Q–P play notes, ← → shift octave, Shift/Alt change dynamics.',
   'minimap.label': 'Keyboard navigator',
 } as const;
 
@@ -123,6 +124,7 @@ const zhCN = {
   'debug.source.default': '默认',
   'actions.reload': '重新加载应用',
   'keyboard.label': '钢琴键盘',
+  'keyboard.hint': '电脑键盘：Z–M 与 Q–P 弹奏音符，← → 切换八度，Shift/Alt 调整力度。',
   'minimap.label': '键盘导航器',
 } satisfies Catalog;
 
@@ -181,6 +183,7 @@ const zhTW = {
   'debug.source.default': '預設',
   'actions.reload': '重新載入 App',
   'keyboard.label': '鋼琴鍵盤',
+  'keyboard.hint': '電腦鍵盤：Z–M 與 Q–P 彈奏音符，← → 切換八度，Shift/Alt 調整力度。',
   'minimap.label': '鍵盤導覽器',
 } satisfies Catalog;
 

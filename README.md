@@ -13,6 +13,7 @@ Play Goodiano at [goodiano.myles.hk](https://goodiano.myles.hk).
 - **Mini-map overview** — Colour-coded octave blocks with an indicator showing which part of the keyboard is on screen.
 - **Offline support** — A service worker caches the app shell and lazily caches the audio sprite for offline play.
 - **Pointer input** — Touch and mouse input, with velocity from touch pressure or device motion where available.
+- **Computer keyboard** — `Z`–`M` and `Q`–`P` play two octaves with the black keys on the row above; `←`/`→` shift octave and scroll the view; `Shift` and `Alt` accent or soften. Mapped by physical key position, so non-QWERTY layouts work unchanged.
 
 ## Tech Stack
 
