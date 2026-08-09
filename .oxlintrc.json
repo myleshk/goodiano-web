@@ -1,0 +1,45 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "categories": {
+    "correctness": "error",
+    "suspicious": "error",
+    "perf": "error"
+  },
+  "rules": {
+    // Internal members are named with a leading underscore throughout the app,
+    // and the tests reach for them deliberately.
+    "no-underscore-dangle": "off",
+    // Reading a response stream and tearing down registrations are sequential
+    // by nature; Promise.all would change their meaning.
+    "no-await-in-loop": "off",
+    // Fires on placeholder callbacks that are reassigned to capturing ones.
+    "unicorn/consistent-function-scoping": "off",
+    // Assigning onended/onstatechange per node is intentional: one owner each.
+    "unicorn/prefer-add-event-listener": "off",
+    // Written for window.postMessage. Client/ServiceWorker.postMessage takes a
+    // transfer list second, so following this rule would throw at runtime.
+    "unicorn/require-post-message-target-origin": "off",
+    "no-unused-vars": [
+      "error",
+      {
+        "args": "after-used",
+        "argsIgnorePattern": "^_",
+        "varsIgnorePattern": "^_",
+        "caughtErrors": "all",
+        "caughtErrorsIgnorePattern": "^_"
+      }
+    ],
+    "eqeqeq": ["error", "always", { "null": "ignore" }],
+    "no-console": ["error", { "allow": ["warn", "error"] }],
+    "no-var": "error",
+    "prefer-const": "error"
+  },
+  "overrides": [
+    {
+      // Build and verification scripts report through stdout by design.
+      "files": ["scripts/**", "build/**", "*.config.ts"],
+      "rules": { "no-console": "off" }
+    }
+  ],
+  "ignorePatterns": ["dist", "node_modules", "public", "package-lock.json"]
+}

@@ -33,6 +33,11 @@ const en = {
   'install.iosStepOpenAsApp': 'Turn on Open as Web App.',
   'install.iosStepAdd': 'Tap Add.',
   'install.iosOpenSafari': 'Open this page in Safari first, then add it to your Home Screen.',
+  'volume.label': 'Volume',
+  'labels.label': 'Note Names',
+  'sustain.label': 'Sustain Pedal',
+  'sustain.on': 'Sustain pedal down',
+  'sustain.off': 'Sustain pedal up',
   'velocity.enable': 'Enable Velocity',
   'velocity.disable': 'Disable Velocity',
   'velocity.motionSensitivity': 'Motion Sensitivity',
@@ -62,7 +67,9 @@ const en = {
   'debug.source.default': 'default',
   'actions.reload': 'Reload App',
   'keyboard.label': 'Piano keyboard',
-  'minimap.label': 'Keyboard navigator',
+  'keyboard.octave': 'Octave {octave}',
+  'keyboard.hint': 'Computer keyboard: Z–M and Q–P play notes, ← → shift octave, Shift/Alt change dynamics.',
+  'minimap.label': 'Keyboard position',
 } as const;
 
 export type TranslationKey = keyof typeof en;
@@ -94,6 +101,11 @@ const zhCN = {
   'install.iosStepOpenAsApp': '打开“作为 Web App 打开”。',
   'install.iosStepAdd': '轻点“添加”。',
   'install.iosOpenSafari': '请先在 Safari 中打开此页面，再将它添加到主屏幕。',
+  'volume.label': '音量',
+  'labels.label': '音名标注',
+  'sustain.label': '延音踏板',
+  'sustain.on': '延音踏板已踩下',
+  'sustain.off': '延音踏板已抬起',
   'velocity.enable': '启用力度感应',
   'velocity.disable': '关闭力度感应',
   'velocity.motionSensitivity': '动作灵敏度',
@@ -123,7 +135,9 @@ const zhCN = {
   'debug.source.default': '默认',
   'actions.reload': '重新加载应用',
   'keyboard.label': '钢琴键盘',
-  'minimap.label': '键盘导航器',
+  'keyboard.octave': '第 {octave} 八度',
+  'keyboard.hint': '电脑键盘：Z–M 与 Q–P 弹奏音符，← → 切换八度，Shift/Alt 调整力度。',
+  'minimap.label': '键盘位置',
 } satisfies Catalog;
 
 const zhTW = {
@@ -152,6 +166,11 @@ const zhTW = {
   'install.iosStepOpenAsApp': '開啟「作為 Web App 開啟」。',
   'install.iosStepAdd': '點一下「加入」。',
   'install.iosOpenSafari': '請先在 Safari 中開啟此頁面，再將它加入主畫面。',
+  'volume.label': '音量',
+  'labels.label': '音名標示',
+  'sustain.label': '延音踏板',
+  'sustain.on': '延音踏板已踩下',
+  'sustain.off': '延音踏板已抬起',
   'velocity.enable': '啟用力度感應',
   'velocity.disable': '關閉力度感應',
   'velocity.motionSensitivity': '動作靈敏度',
@@ -181,18 +200,20 @@ const zhTW = {
   'debug.source.default': '預設',
   'actions.reload': '重新載入 App',
   'keyboard.label': '鋼琴鍵盤',
-  'minimap.label': '鍵盤導覽器',
+  'keyboard.octave': '第 {octave} 八度',
+  'keyboard.hint': '電腦鍵盤：Z–M 與 Q–P 彈奏音符，← → 切換八度，Shift/Alt 調整力度。',
+  'minimap.label': '鍵盤位置',
 } satisfies Catalog;
 
 const catalogs: Record<SupportedLocale, Catalog> = { en, 'zh-CN': zhCN, 'zh-TW': zhTW };
-const supportedLocales: readonly SupportedLocale[] = ['en', 'zh-CN', 'zh-TW'];
+const supportedLocales: ReadonlySet<SupportedLocale> = new Set(['en', 'zh-CN', 'zh-TW']);
 const listeners = new Set<(locale: SupportedLocale) => void>();
 let preference: LocalePreference = 'system';
 let locale: SupportedLocale = 'en';
 let initialized = false;
 
 function isLocalePreference(value: unknown): value is LocalePreference {
-  return value === 'system' || supportedLocales.includes(value as SupportedLocale);
+  return value === 'system' || supportedLocales.has(value as SupportedLocale);
 }
 
 export function resolveLocale(languages: readonly string[] | string | null | undefined): SupportedLocale {

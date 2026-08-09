@@ -150,7 +150,11 @@ class InputController {
   _onPointerDown(e: PointerEvent): void {
     e.preventDefault();
     try { this.container.setPointerCapture(e.pointerId); } catch (_) { /* Safari */ }
-    this.container.focus();
+    // Deliberately no focus() here. Nothing needs the container focused —
+    // computer-keyboard notes are captured on the window and the mini-map
+    // handles its own keys — and focusing it from a tap paints a focus ring
+    // across the whole keyboard. preventDefault above already stops the
+    // browser's own focus-on-press, so a ring appears only for Tab.
     const key = this._findKeyAtPoint(e.clientX, e.clientY);
     const isFirst = this.activePointers.size === 0;
     if (isFirst) {

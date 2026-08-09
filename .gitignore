@@ -24,3 +24,6 @@ Thumbs.db
 
 # Vitest browser-mode auto-generated screenshots
 __screenshots__/
+
+# Coverage output
+coverage/

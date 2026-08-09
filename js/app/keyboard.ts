@@ -74,12 +74,29 @@ function computeLayout(keys: PianoKey[]): KeyboardLayout {
     accumulated += block.widthMultiplier;
   }
 
+  // Indexes for the input hot paths: a press resolves a key by id, the
+  // computer keyboard by pitch, and hit testing by white-key boundary.
+  const keysById = new Map<string, PianoKey>();
+  const keysByMidiNote = new Map<number, PianoKey>();
+  for (const key of keys) {
+    keysById.set(key.id, key);
+    keysByMidiNote.set(key.midiNote, key);
+  }
+  const blackKeyByWhiteIndex = new Map<number, PianoKey>();
+  for (const blackKey of blackKeys) {
+    const whiteIndex = blackKeyWhiteIndex[blackKey.id];
+    if (whiteIndex != null) blackKeyByWhiteIndex.set(whiteIndex, blackKey);
+  }
+
   return {
     keys,
     whiteKeys,
     blackKeys,
     whiteKeyCount: whiteKeys.length,
     blackKeyWhiteIndex,
+    keysById,
+    keysByMidiNote,
+    blackKeyByWhiteIndex,
     octaveBlocks,
     miniMapKeyXs,
     whiteIndexMap,
@@ -99,22 +116,19 @@ function computeLayout(keys: PianoKey[]): KeyboardLayout {
  * @returns {object|null} PianoKeyModel or null
  */
 function hitTest(x: number, y: number, whiteKeyWidth: number, keyboardHeight: number, layout: KeyboardLayout): PianoKey | null {
-  const { whiteKeys, blackKeys, blackKeyWhiteIndex } = layout;
+  const { whiteKeys, blackKeyByWhiteIndex } = layout;
 
   const blackWidth = whiteKeyWidth * 0.65;
   const blackHeight = keyboardHeight * 0.6;
 
-  // Check black keys first (upper 60% of keyboard)
-  if (y < blackHeight) {
-    for (const bk of blackKeys) {
-      const wPos = blackKeyWhiteIndex[bk.id];
-      if (wPos == null) continue;
-      const centerX = wPos * whiteKeyWidth;
-      const left = centerX - blackWidth / 2;
-      const right = centerX + blackWidth / 2;
-      if (x >= left && x <= right && y >= 0 && y <= blackHeight) {
-        return bk;
-      }
+  // Check black keys first (upper 60% of keyboard). Each is centred on a
+  // white-key boundary and none overlap, so the only candidate is the key on
+  // the nearest boundary — no scan needed.
+  if (y >= 0 && y < blackHeight && whiteKeyWidth > 0) {
+    const boundary = Math.round(x / whiteKeyWidth);
+    const blackKey = blackKeyByWhiteIndex.get(boundary);
+    if (blackKey && Math.abs(x - boundary * whiteKeyWidth) <= blackWidth / 2) {
+      return blackKey;
     }
   }
 
@@ -172,6 +186,24 @@ function getMiniMapViewport(
 }
 
 /**
+ * Inverse of the mini-map projection: the white key drawn at a horizontal
+ * fraction of the mini-map. Partial edge octaves are drawn at half width, so
+ * this has to walk the stored positions rather than scale by key count.
+ */
+function whiteKeyIndexAtMiniMapX(layout: KeyboardLayout, fraction: number): number {
+  const positions = layout.miniMapKeyXs;
+  if (positions.length === 0) return 0;
+  const clamped = Math.max(0, Math.min(1, fraction));
+  let index = 0;
+  // Positions ascend, so the last one at or before the fraction is the hit.
+  for (let i = 0; i < positions.length; i += 1) {
+    if (positions[i].x > clamped) break;
+    index = i;
+  }
+  return index;
+}
+
+/**
  * Choose a white-key width for the current keyboard viewport. Portrait keeps
  * ten keys visible, while landscape matches the iOS keyboard's 55-point
  * logical white-key width. CSS caps landscape height to a 7:1 key ratio.
@@ -206,7 +238,16 @@ function findMiddleCIndex(layout: KeyboardLayout): number {
   return idx >= 0 ? idx : Math.floor(layout.whiteKeys.length / 2);
 }
 
-export { computeLayout, hitTest, getViewportRange, getMiniMapViewport, getWhiteKeyWidth, scrollToKey, findMiddleCIndex };
+export {
+  computeLayout,
+  hitTest,
+  getViewportRange,
+  getMiniMapViewport,
+  getWhiteKeyWidth,
+  scrollToKey,
+  findMiddleCIndex,
+  whiteKeyIndexAtMiniMapX,
+};
 export type { KeyboardLayout, MiniMapKeyPosition, OctaveBlock };
 import type { PianoKey } from './model';
 
@@ -229,6 +270,9 @@ interface KeyboardLayout {
   blackKeys: PianoKey[];
   whiteKeyCount: number;
   blackKeyWhiteIndex: Record<string, number>;
+  keysById: Map<string, PianoKey>;
+  keysByMidiNote: Map<number, PianoKey>;
+  blackKeyByWhiteIndex: Map<number, PianoKey>;
   octaveBlocks: OctaveBlock[];
   miniMapKeyXs: MiniMapKeyPosition[];
   whiteIndexMap: Map<string, number>;

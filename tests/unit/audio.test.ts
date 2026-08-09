@@ -16,6 +16,23 @@ class FakeAudioContext {
   }
 }
 
+/** A context that also offers the limiter node, so routing can be asserted. */
+class LimiterAudioContext extends FakeAudioContext {
+  compressor = {
+    threshold: { value: 0 },
+    knee: { value: -1 },
+    ratio: { value: 0 },
+    attack: { value: 0 },
+    release: { value: 0 },
+    connect: vi.fn(),
+    disconnect: vi.fn(),
+  };
+
+  createDynamicsCompressor() {
+    return this.compressor;
+  }
+}
+
 function responseWith(bytes = new Uint8Array([1, 2, 3, 4])) {
   return {
     ok: true,
@@ -59,9 +76,25 @@ function readyEngine(zones: readonly SampleZone[] = [{
     connect: ReturnType<typeof vi.fn>;
     disconnect: ReturnType<typeof vi.fn>;
   }> = [];
+  const createdFilters: Array<{
+    type: string;
+    frequency: { value: number };
+    connect: ReturnType<typeof vi.fn>;
+    disconnect: ReturnType<typeof vi.fn>;
+  }> = [];
   engine.ctx = {
     state: 'running',
     currentTime: 12,
+    createBiquadFilter: vi.fn(() => {
+      const filter = {
+        type: '',
+        frequency: { value: 0 },
+        connect: vi.fn(),
+        disconnect: vi.fn(),
+      };
+      createdFilters.push(filter);
+      return filter;
+    }),
     createBufferSource: vi.fn(() => {
       const source = {
         buffer: null,
@@ -93,7 +126,7 @@ function readyEngine(zones: readonly SampleZone[] = [{
   engine.masterGain = {} as GainNode;
   engine.sampleBuffer = {} as AudioBuffer;
   engine.zones = zones;
-  return { engine, createdSources, createdGains };
+  return { engine, createdSources, createdGains, createdFilters };
 }
 
 afterEach(() => vi.unstubAllGlobals());
@@ -237,10 +270,187 @@ describe('PianoAudioEngine playback', () => {
     expect(createdSources[0].playbackRate.value).toBeCloseTo(1); // MIDI 60 == rootKey 60
   });
 
-  it('applies velocity to each note gain', () => {
+  it('applies a perceptual velocity curve to each note gain', () => {
     const { engine, createdGains } = readyEngine();
     engine.noteOn('C4', 60, 64);
-    expect(createdGains[0].gain.value).toBeCloseTo(64 / 127);
+    // Squared, not linear: half velocity is a quarter of the amplitude.
+    expect(createdGains[0].gain.value).toBeCloseTo((64 / 127) ** 2);
+  });
+
+  it('spreads velocity over a wider dynamic range than a linear map', () => {
+    const { engine, createdGains } = readyEngine();
+    engine.noteOn('soft', 60, 40);
+    engine.noteOn('loud', 60, 120);
+
+    const ratio = createdGains[1].gain.value / createdGains[0].gain.value;
+    expect(ratio).toBeGreaterThan(120 / 40);
+  });
+
+  it('darkens soft notes and leaves the default velocity fully open', () => {
+    const { engine, createdFilters, createdGains } = readyEngine();
+
+    engine.noteOn('soft', 60, 40);
+    engine.noteOn('default', 62, 100);
+    engine.noteOn('loud', 64, 127);
+
+    expect(createdFilters.map(filter => filter.type)).toEqual(['lowpass', 'lowpass', 'lowpass']);
+    expect(createdFilters[0].frequency.value).toBeLessThan(createdFilters[1].frequency.value);
+    // At and above the default velocity the filter is open, so players without
+    // pressure or motion sensing hear an unchanged timbre.
+    expect(createdFilters[1].frequency.value).toBeCloseTo(18000);
+    expect(createdFilters[2].frequency.value).toBeCloseTo(18000);
+    // Voices feed their note's filter, which feeds the master bus.
+    expect(createdGains[0].connect).toHaveBeenCalledWith(createdFilters[0]);
+    expect(createdFilters[0].connect).toHaveBeenCalledWith(engine.masterGain);
+  });
+
+  it('disconnects the tone filter once every voice of a note has ended', () => {
+    const { engine, createdSources, createdFilters } = readyEngine();
+    engine.noteOn('C4', 60, 80);
+    engine.noteOff('C4');
+
+    createdSources[0].onended?.({} as Event);
+
+    expect(createdFilters[0].disconnect).toHaveBeenCalledOnce();
+    expect(engine.voices.size).toBe(0);
+  });
+
+  it('still plays when the filter node is unavailable', () => {
+    const { engine, createdGains } = readyEngine();
+    (engine.ctx as unknown as { createBiquadFilter?: unknown }).createBiquadFilter = undefined;
+
+    engine.noteOn('C4', 60, 80);
+
+    expect(createdGains[0].connect).toHaveBeenCalledWith(engine.masterGain);
+    expect(engine.activeNotes.has('C4')).toBe(true);
+  });
+
+  it('routes the master gain through a peak limiter into the destination', async () => {
+    vi.stubGlobal('navigator', {});
+    vi.stubGlobal('window', { AudioContext: LimiterAudioContext });
+
+    const engine = new PianoAudioEngine();
+    await engine.init();
+    const ctx = engine.ctx as unknown as LimiterAudioContext;
+
+    // Chords sum well past full scale, so the pre-limiter stage keeps headroom.
+    expect(engine.masterGain!.gain.value).toBeLessThan(1);
+    expect(engine.limiter).toBe(ctx.compressor);
+    expect(engine.masterGain!.connect).toHaveBeenCalledWith(ctx.compressor);
+    expect(ctx.compressor.connect).toHaveBeenCalledWith(ctx.destination);
+    // A high ratio over a hard knee is what makes it limit rather than compress.
+    expect(ctx.compressor.ratio.value).toBeGreaterThanOrEqual(20);
+    expect(ctx.compressor.knee.value).toBe(0);
+    expect(ctx.compressor.threshold.value).toBeLessThan(0);
+  });
+
+  it('connects straight to the destination when the limiter node is missing', async () => {
+    vi.stubGlobal('navigator', {});
+    vi.stubGlobal('window', { AudioContext: FakeAudioContext });
+
+    const engine = new PianoAudioEngine();
+    await engine.init();
+
+    expect(engine.limiter).toBeNull();
+    expect(engine.masterGain!.connect).toHaveBeenCalledWith(engine.ctx!.destination);
+  });
+
+  it('steals a releasing voice before a held one at the polyphony cap', () => {
+    const { engine, createdGains, createdSources } = readyEngine();
+    for (let index = 0; index < 32; index += 1) engine.noteOn(`k${index}`, 40 + index);
+    expect(engine.voices.size).toBe(32);
+
+    engine.noteOff('k1');
+    engine.noteOn('fresh', 90);
+
+    // k1 was already fading; it loses its voice rather than the held k0.
+    expect(createdGains[1].gain.linearRampToValueAtTime).toHaveBeenLastCalledWith(0, 12.06);
+    expect(createdGains[0].gain.linearRampToValueAtTime).not.toHaveBeenCalled();
+    expect(engine.activeNotes.has('k0')).toBe(true);
+    expect(engine.activeNotes.has('fresh')).toBe(true);
+    expect(createdSources).toHaveLength(33);
+  });
+
+  it('steals the oldest held voice when nothing is releasing', () => {
+    const { engine, createdGains } = readyEngine();
+    for (let index = 0; index < 32; index += 1) engine.noteOn(`k${index}`, 40 + index);
+
+    engine.noteOn('fresh', 90);
+
+    expect(engine.activeNotes.has('k0')).toBe(false);
+    expect(engine.activeNotes.has('k1')).toBe(true);
+    expect(createdGains[0].gain.linearRampToValueAtTime).toHaveBeenCalledWith(0, 12.06);
+  });
+
+  it('bounds sounding voices through a long glissando', () => {
+    const { engine } = readyEngine();
+    for (let index = 0; index < 200; index += 1) engine.noteOn(`g${index}`, 30 + (index % 50));
+
+    let sounding = 0;
+    for (const note of engine.voices) if (!note.stolen) sounding += 1;
+    expect(sounding).toBeLessThanOrEqual(32);
+  });
+
+  it('holds released notes open while the pedal is down', () => {
+    const { engine, createdGains } = readyEngine();
+    engine.setSustain(true);
+    engine.noteOn('C4', 60, 100);
+
+    engine.noteOff('C4');
+
+    // No release ramp yet: the damper is still off the string.
+    expect(createdGains[0].gain.linearRampToValueAtTime).not.toHaveBeenCalled();
+    expect(engine.voices.size).toBe(1);
+    expect(engine.sustainedNotes.has('C4')).toBe(true);
+    expect(engine.activeNotes.has('C4')).toBe(false);
+
+    engine.setSustain(false);
+
+    expect(createdGains[0].gain.linearRampToValueAtTime).toHaveBeenCalledWith(0, 12.2);
+    expect(engine.sustainedNotes.size).toBe(0);
+  });
+
+  it('leaves keys that are still down sounding when the pedal lifts', () => {
+    const { engine, createdGains } = readyEngine();
+    engine.setSustain(true);
+    engine.noteOn('C4', 60, 100);
+    engine.noteOn('E4', 64, 100);
+    engine.noteOff('C4');
+
+    engine.setSustain(false);
+
+    expect(createdGains[0].gain.linearRampToValueAtTime).toHaveBeenCalledWith(0, 12.2);
+    expect(createdGains[1].gain.linearRampToValueAtTime).not.toHaveBeenCalled();
+    expect(engine.activeNotes.has('E4')).toBe(true);
+  });
+
+  it('retires the earlier voice when one key is struck twice under the pedal', () => {
+    const { engine, createdGains } = readyEngine();
+    engine.setSustain(true);
+
+    engine.noteOn('C4', 60, 100);
+    engine.noteOff('C4');
+    engine.noteOn('C4', 60, 100);
+    engine.noteOff('C4');
+
+    expect(createdGains[0].gain.linearRampToValueAtTime).toHaveBeenCalledWith(0, 12.2);
+    expect(createdGains[1].gain.linearRampToValueAtTime).not.toHaveBeenCalled();
+    expect(engine.sustainedNotes.get('C4')).toBeDefined();
+    expect(engine.sustainedNotes.size).toBe(1);
+  });
+
+  it('steals a pedal-held voice before one still under a finger', () => {
+    const { engine, createdGains } = readyEngine();
+    engine.setSustain(true);
+    for (let index = 0; index < 32; index += 1) engine.noteOn(`k${index}`, 40 + index);
+    // k5 is now held by the pedal alone; k0 is still down.
+    engine.noteOff('k5');
+
+    engine.noteOn('fresh', 90);
+
+    expect(createdGains[5].gain.linearRampToValueAtTime).toHaveBeenCalledWith(0, 12.06);
+    expect(createdGains[0].gain.linearRampToValueAtTime).not.toHaveBeenCalled();
+    expect(engine.sustainedNotes.has('k5')).toBe(false);
   });
 
   it('queues only held notes while loading and clears them safely', () => {

@@ -93,6 +93,7 @@ export function versionedAssetsPlugin(): Plugin {
       handler(html) {
         if (!productionBuild) return html;
         return html
+          .replace('assets/yamaha-u1.m4a', `./${audioFileName}`)
           .replace('./manifest.en.json', `./${manifests.en.fileName}`)
           .replace('assets/icons/icon-192.png', `./${icons.find(icon => icon.size === 192)!.fileName}`)
           .replace('assets/icons/icon-512.png', `./${icons.find(icon => icon.size === 512)!.fileName}`)

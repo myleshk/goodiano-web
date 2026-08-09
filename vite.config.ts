@@ -27,6 +27,9 @@ export default defineConfig({
   build: {
     copyPublicDir: false,
     target: 'safari15',
-    sourcemap: true,
+    // No source map is deployed. "hidden" would keep the weight while making
+    // the map undiscoverable, and the sources are already public: this repo
+    // builds the deployed bundle byte for byte from the same commit.
+    sourcemap: false,
   },
 });

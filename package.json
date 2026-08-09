@@ -1,6 +1,6 @@
 {
   "name": "goodiano-web",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -9,13 +9,17 @@
     "preview": "vite preview",
     "audio:generate": "node scripts/build-audio-sprite.mjs",
     "typecheck": "tsc --noEmit",
+    "lint": "oxlint js tests build scripts --deny-warnings",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:browser": "vitest run --config vitest.browser.config.ts"
+    "test:browser": "vitest run --config vitest.browser.config.ts",
+    "test:coverage": "vitest run --config vitest.coverage.config.ts --coverage"
   },
   "devDependencies": {
     "@types/node": "^26.1.1",
     "@vitest/browser-playwright": "^4.1.10",
+    "@vitest/coverage-istanbul": "^4.1.10",
+    "oxlint": "^1.77.0",
     "playwright": "^1.61.1",
     "typescript": "^7.0.2",
     "vite": "^8.1.5",

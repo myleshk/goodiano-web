@@ -23,6 +23,19 @@ html, body {
   touch-action: manipulation;
 }
 
+/* Available to assistive technology, absent from the visual design. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  clip-path: inset(50%);
+}
+
 /* --- App Shell --- */
 .app {
   display: flex;
@@ -108,6 +121,38 @@ html, body {
 .loading-overlay.recoverable-error .loading-progress { display: none; }
 .loading-overlay.recoverable-error .loading-retry { display: block; }
 
+/* Removed from the layout only after the fade completes, so the overlay can be
+   brought back later (a failed offline write can be reported after dismissal). */
+.loading-overlay.dismissed { display: none; }
+
+/* Playback succeeded and only offline storage failed: shrink to a toast so the
+   keyboard stays usable. Stacks above the install promotion, which shares this
+   corner and is the only element it can overlap. */
+.loading-overlay.as-toast {
+  inset: auto calc(env(safe-area-inset-right, 0px) + 12px)
+         calc(env(safe-area-inset-bottom, 0px) + 12px) auto;
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 10px;
+  width: min(440px, calc(100vw - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px) - 24px));
+  padding: 12px 14px;
+  border: 1px solid rgba(255,255,255,0.24);
+  border-radius: 14px;
+  background: rgba(18,18,18,0.94);
+  box-shadow: 0 10px 34px rgba(0,0,0,0.5);
+  z-index: 1060;
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+}
+
+.loading-overlay.as-toast .loading-text {
+  flex: 1 1 180px;
+  color: rgba(255,255,255,0.78);
+  text-align: left;
+}
+
+.loading-overlay.as-toast .loading-retry { margin-top: 0; }
+
 @keyframes spin {
   to { transform: rotate(360deg); }
 }
@@ -118,6 +163,14 @@ html, body {
   width: 100%;
   position: relative;
   z-index: 10;
+  cursor: pointer;
+  /* Own the horizontal gesture so dragging navigates instead of panning. */
+  touch-action: none;
+}
+
+.minimap-container:focus-visible {
+  outline: 2px solid #7db8ff;
+  outline-offset: -2px;
 }
 
 /* --- Touch velocity diagnostics --- */
@@ -264,6 +317,7 @@ html, body {
   outline-offset: -2px;
 }
 
+.volume-control label,
 .sensitivity-control label {
   display: block;
   margin-top: 8px;
@@ -278,6 +332,7 @@ html, body {
   gap: 10px;
 }
 
+.master-volume,
 .velocity-sensitivity {
   flex: 1;
   min-width: 0;
@@ -285,11 +340,13 @@ html, body {
   cursor: pointer;
 }
 
+.master-volume:focus-visible,
 .velocity-sensitivity:focus-visible {
   outline: 2px solid #7db8ff;
   outline-offset: 3px;
 }
 
+.master-volume-output,
 .velocity-sensitivity-output {
   width: 3ch;
   color: rgba(255,255,255,0.9);
@@ -314,6 +371,12 @@ html, body {
 }
 
 .settings-action[hidden] { display: none; }
+
+.settings-action[aria-pressed="true"] {
+  color: #111;
+  background: rgba(255,255,255,0.92);
+  border-color: rgba(255,255,255,0.92);
+}
 
 .settings-action {
   display: block;
@@ -459,24 +522,24 @@ html, body {
   display: none;
 }
 
+/* The scroll region is the keyboard's focusable control, so its focus ring has
+   to be visible against the keys rather than clipped by the overflow. */
+.keyboard-scroll:focus-visible {
+  outline: 2px solid #7db8ff;
+  outline-offset: -2px;
+}
+
 .keyboard-scroll:active {
   cursor: grabbing;
 }
 
 .keyboard-content {
+  /* Set by the renderer on resize; every key is sized from it. */
+  --white-key-width: 50px;
   height: 100%;
   position: relative;
   min-width: 100%;
   background-color: #111;
-}
-
-/* --- Key Press Animation --- */
-.key-white {
-  will-change: transform, background-color;
-}
-
-.key-black {
-  will-change: transform, background-color;
 }
 
 .key-white:active,
@@ -502,6 +565,8 @@ html, body {
 
 .key-white {
   flex: 0 0 auto;
+  width: var(--white-key-width, 50px);
+  height: 100%;
   position: relative;
   cursor: pointer;
   border-radius: 0 0 6px 6px;
@@ -512,6 +577,8 @@ html, body {
   -webkit-user-select: none;
   transition: transform 0.12s cubic-bezier(0.25, 0.1, 0.25, 1), background-color 0.08s ease;
 }
+
+.keyboard-content.hide-key-labels .key-label { display: none; }
 
 .key-white .key-label {
   font-size: 18px;
@@ -526,7 +593,15 @@ html, body {
 }
 
 .key-black {
+  /* Derived here rather than on the container so the key stays correct
+     wherever it is mounted, needing only the inherited white-key width. */
+  --black-key-width: calc(var(--white-key-width, 50px) * 0.65);
   position: absolute;
+  /* --white-index is stamped once per key when the keyboard is built: the
+     count of white keys before it, which is where it is centred. */
+  left: calc(var(--white-index) * var(--white-key-width, 50px) - var(--black-key-width) / 2);
+  width: var(--black-key-width);
+  height: 100%;
   background-color: #000;
   border-radius: 0 0 6px 6px;
   cursor: pointer;
@@ -655,4 +730,16 @@ html, body {
 /* --- Status bar spacer for notched iPhones --- */
 .status-bar-spacer {
   flex: 0 0 env(safe-area-inset-top, 0px);
+}
+
+/* --- Reduced motion --- */
+/* Key press feedback stays, but as an instant colour change rather than a
+   transition, and the loading overlay cuts instead of fading. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
 }
