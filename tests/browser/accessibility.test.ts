@@ -55,6 +55,24 @@ describe('keyboard accessibility', () => {
     expect(document.getElementById('keyboard-bindings')).not.toBeNull();
   });
 
+  it('does not focus the keyboard when it is played by pointer', async () => {
+    await setupApp();
+    const region = document.querySelector<HTMLElement>('.keyboard-scroll')!;
+    const rect = region.getBoundingClientRect();
+
+    region.dispatchEvent(new PointerEvent('pointerdown', {
+      pointerId: 1,
+      clientX: rect.left + 10,
+      clientY: rect.top + 10,
+      bubbles: true,
+      cancelable: true,
+    }));
+
+    // Focusing it from a tap paints a focus ring across the whole keyboard.
+    // The ring is reserved for Tab, which region.focus() still produces.
+    expect(document.activeElement).not.toBe(region);
+  });
+
   it('reports the settings panel expanded state on its toggle', async () => {
     await setupApp();
     const toggle = document.querySelector<HTMLButtonElement>('.settings-toggle')!;
