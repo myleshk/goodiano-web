@@ -27,7 +27,7 @@ import {
 import { KeyboardRenderer } from './render';
 import type { KeyboardLayout } from './keyboard';
 import type { PianoKey } from './model';
-import { audioSpriteUrl, version } from 'virtual:goodiano-assets';
+import { audioSpriteUrl, commit, version } from 'virtual:goodiano-assets';
 import { registerServiceWorker, RELOAD_MARKER } from './service-worker';
 import { InstallPromotionController } from './install-promotion';
 import { ComputerKeyboardController } from './computer-keyboard';
@@ -89,9 +89,12 @@ class GoodianoApp {
     this.loadingOverlay = document.querySelector('.loading-overlay');
     this.velocityDebug = document.querySelector('.velocity-debug');
     this.settingsPanel = document.querySelector('.settings-panel');
-    // Render the version from the single source of truth (package.json).
+    // Both values are stamped in by the build, so this names the running build
+    // rather than the last time someone remembered to bump a number.
     const versionEl = document.querySelector<HTMLElement>('.app-version');
-    if (versionEl) versionEl.textContent = `Goodiano · v${version}`;
+    if (versionEl) {
+      versionEl.textContent = commit ? `Goodiano · v${version} (${commit})` : `Goodiano · v${version}`;
+    }
     this._setupLocaleControl();
     this._setupSettingsPanel();
     const loadingOverlay = this.loadingOverlay;
