@@ -21,6 +21,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          # The build derives the version's patch number from the commit count,
+          # and the default shallow clone would report that as 1 on every run.
+          fetch-depth: 0
 
       - name: Set up Node.js
         uses: actions/setup-node@v7

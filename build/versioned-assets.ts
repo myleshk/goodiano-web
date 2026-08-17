@@ -1,5 +1,7 @@
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import type { Plugin } from 'vite';
 
 const VIRTUAL_ID = 'virtual:goodiano-assets';
@@ -15,10 +17,48 @@ function publicFile(path: string): Buffer {
   return readFileSync(new URL(`../public/${path}`, import.meta.url));
 }
 
-// Single source of truth for the app version: package.json.
-const appVersion = (JSON.parse(readFileSync(new URL('../package.json', import.meta.url)).toString('utf8')) as {
+/** Read one value out of git, or null where git cannot answer. */
+function git(...args: string[]): string | null {
+  try {
+    const value = execFileSync('git', args, {
+      cwd: fileURLToPath(new URL('..', import.meta.url)),
+      encoding: 'utf8',
+      // git's own diagnostics are not ours to print: a missing repository is a
+      // handled case, not a build failure.
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    return value.length > 0 ? value : null;
+  } catch (_) {
+    // No git binary, or no repository — building from a source archive.
+    return null;
+  }
+}
+
+/**
+ * Compose the version the app reports. package.json holds the major and minor,
+ * which a person chooses and changes rarely; the patch is the commit count, so
+ * the version advances by itself on every push and the number in the settings
+ * panel always names the running build. Nothing is written back to the
+ * repository to make that true.
+ *
+ * Where git cannot answer — a build from a source archive — the package.json
+ * version is used verbatim rather than inventing a number for it.
+ */
+export function deriveVersion(packageVersion: string, commitCount: string | null): string {
+  if (commitCount === null || !/^\d+$/.test(commitCount)) return packageVersion;
+  const [major, minor] = packageVersion.split('.');
+  if (!major || !minor) return packageVersion;
+  return `${major}.${minor}.${commitCount}`;
+}
+
+const packageVersion = (JSON.parse(readFileSync(new URL('../package.json', import.meta.url)).toString('utf8')) as {
   version: string;
 }).version;
+
+const appVersion = deriveVersion(packageVersion, git('rev-list', '--count', 'HEAD'));
+// The commit count alone is only monotonic along one branch. The short hash
+// says exactly which commit shipped, which is what a bug report needs.
+const appCommit = git('rev-parse', '--short=7', 'HEAD') ?? '';
 
 export function versionedAssetsPlugin(): Plugin {
   let productionBuild = false;
@@ -59,6 +99,7 @@ export function versionedAssetsPlugin(): Plugin {
       if (this.environment.mode === 'dev') {
         return `
           export const version = ${JSON.stringify(appVersion)};
+          export const commit = ${JSON.stringify(appCommit)};
           export const audioSpriteUrl = '/assets/yamaha-u1.m4a';
           export const localizedManifestUrls = {
             en: '/manifest.en.json',
@@ -71,6 +112,7 @@ export function versionedAssetsPlugin(): Plugin {
       return `
         const assetBase = ${assetBase};
         export const version = ${JSON.stringify(appVersion)};
+        export const commit = ${JSON.stringify(appCommit)};
         export const audioSpriteUrl = new URL(${JSON.stringify(audioFileName.split('/').pop())}, assetBase).href;
         export const localizedManifestUrls = ${JSON.stringify(Object.fromEntries(
           Object.entries(manifests).map(([locale, manifest]) => [locale, manifest.fileName.split('/').pop()]),

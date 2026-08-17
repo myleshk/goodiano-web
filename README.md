@@ -106,34 +106,37 @@ and adds AAC-frame-aligned silent guards between samples.
 
 Any modern browser with Web Audio API and Service Worker support: Safari (iOS 14.5+), Chrome, Edge, Firefox. Best experience on mobile Safari/iOS.
 
-## Releases
+## Versioning
 
-The version number is never edited by hand. `package.json` is the single
-source of truth for it — the settings panel reads the same value through the
-build — and [release-please](https://github.com/googleapis/release-please)
-keeps it current from the commit messages on `main`:
+The patch number is never typed by a person. The build derives the version and
+stamps it into the bundle, so the number in the settings panel always names the
+build that is actually running:
 
-- `fix:`, `perf:`, `refactor:`, `build:` bump the patch (`0.4.0` → `0.4.1`).
-- `feat:` bumps the minor (`0.4.0` → `0.5.0`). While the version is below
-  `1.0.0`, a breaking change bumps the minor too rather than the major.
-- `chore:` and `ci:` alone never trigger a release.
+```
+major.minor  from package.json      chosen by hand, changed rarely
+patch        git rev-list --count   advances on every commit
+commit       git rev-parse --short  names the exact build
+```
 
-Every push to `main` refreshes a standing "chore(release): x.y.z" pull request
-holding the bump and the generated `CHANGELOG.md` entry. Nothing is released
-while it sits there — merge it when you want to cut the release, and the merge
-tags `vx.y.z` and publishes the GitHub release. So the version reflects the
-last release, not the last deploy; `main` deploys ahead of it show the previous
-number until the release pull request is merged.
+The settings panel shows the two together, for example `Goodiano · v0.4.63
+(a1b2c3d)`. Every push to `main` deploys and carries a higher patch number than
+the one before it — nothing to merge, nothing to approve, and nothing written
+back to the repository to make it happen.
 
-Because the commit message decides the bump, write it as the release note you
-want: the type prefix is not decoration.
+Bump `major`/`minor` in `package.json` when a release deserves it; the patch
+digits there are ignored and exist only to keep the field valid semver. Where
+git is unavailable, such as a build from a source archive, the version falls
+back to the `package.json` value verbatim and the commit is omitted.
+
+CI checks out with `fetch-depth: 0` for this. A shallow clone would count one
+commit and pin every build to `.1`.
 
 ## Contributing
 
 1. Fork / clone the repository.
 2. Serve locally (see Getting Started) and make changes.
 3. Keep the imperative, framework-free piano surface unless a UI framework adds a clear product benefit.
-4. Commit with a [conventional-commit](https://www.conventionalcommits.org/) subject (see Releases) and open a pull request.
+4. Commit and open a pull request.
 
 ## License
 
