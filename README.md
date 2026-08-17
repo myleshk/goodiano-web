@@ -106,12 +106,34 @@ and adds AAC-frame-aligned silent guards between samples.
 
 Any modern browser with Web Audio API and Service Worker support: Safari (iOS 14.5+), Chrome, Edge, Firefox. Best experience on mobile Safari/iOS.
 
+## Releases
+
+The version number is never edited by hand. `package.json` is the single
+source of truth for it — the settings panel reads the same value through the
+build — and [release-please](https://github.com/googleapis/release-please)
+keeps it current from the commit messages on `main`:
+
+- `fix:`, `perf:`, `refactor:`, `build:` bump the patch (`0.4.0` → `0.4.1`).
+- `feat:` bumps the minor (`0.4.0` → `0.5.0`). While the version is below
+  `1.0.0`, a breaking change bumps the minor too rather than the major.
+- `chore:` and `ci:` alone never trigger a release.
+
+Every push to `main` refreshes a standing "chore(release): x.y.z" pull request
+holding the bump and the generated `CHANGELOG.md` entry. Nothing is released
+while it sits there — merge it when you want to cut the release, and the merge
+tags `vx.y.z` and publishes the GitHub release. So the version reflects the
+last release, not the last deploy; `main` deploys ahead of it show the previous
+number until the release pull request is merged.
+
+Because the commit message decides the bump, write it as the release note you
+want: the type prefix is not decoration.
+
 ## Contributing
 
 1. Fork / clone the repository.
 2. Serve locally (see Getting Started) and make changes.
 3. Keep the imperative, framework-free piano surface unless a UI framework adds a clear product benefit.
-4. Commit and open a pull request.
+4. Commit with a [conventional-commit](https://www.conventionalcommits.org/) subject (see Releases) and open a pull request.
 
 ## License
 
