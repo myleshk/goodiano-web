@@ -35,6 +35,27 @@ const LIMITER_ATTACK_SECONDS = 0.003;
 const LIMITER_RELEASE_SECONDS = 0.25;
 const AUDIO_FETCH_TIMEOUT_MS = 30_000;
 const DOWNLOAD_PROGRESS_SHARE = 0.9;
+// iOS can come back from the lock screen or the app switcher with the context
+// still reporting 'running' while the audio unit behind it is gone: silence,
+// and no state change to react to. The one observable symptom is that the
+// context clock stops advancing, so the clock is what we watch.
+const STALL_PROBE_INTERVAL_MS = 250;
+// Restoring the audio unit is not instant, so give it a few intervals to start
+// moving the clock again before writing the context off.
+const STALL_PROBE_ATTEMPTS = 3;
+// A gesture can only prove a stall once enough wall-clock time has passed for a
+// healthy clock to have visibly moved since the last reading.
+const STALL_GESTURE_MIN_ELAPSED_MS = 250;
+
+function nowMs(): number {
+  return typeof performance !== 'undefined' && typeof performance.now === 'function'
+    ? performance.now()
+    : Date.now();
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise(resolve => { setTimeout(resolve, milliseconds); });
+}
 
 type AudioEngineState = 'loading' | 'awaitingGesture' | 'ready' | 'error';
 type LoadProgressCallback = (progress: number) => void;
@@ -97,30 +118,48 @@ class PianoAudioEngine {
   loaded = false;
   loading = false;
   state: AudioEngineState = 'loading';
+  /** Last reading of the context clock, paired with the wall clock beside it. */
+  private _clockAudioTime: number | null = null;
+  private _clockWallTime = 0;
+  /** A resume is in flight and the notes still held should be rebuilt on it. */
+  private _restorePending = false;
+  /** A stalled context was found mid-load and still needs replacing. */
+  private _rebuildDeferred = false;
 
   /** Initialize AudioContext (must be resumed from a user gesture on iOS). */
   async init(): Promise<AudioContext> {
     if (this.ctx) return this.ctx;
+    return this._createContext();
+  }
+
+  /**
+   * Build the context and its output chain. Synchronous so a gesture handler
+   * can replace a dead context and resume the replacement without crossing a
+   * task boundary, which iOS would treat as being outside the gesture.
+   */
+  private _createContext(): AudioContext {
     const AudioContextClass = window.AudioContext || (window as WebKitAudioWindow).webkitAudioContext;
     if (!AudioContextClass) {
       this.state = 'error';
       throw new Error('Web Audio is unavailable in this browser');
     }
     configurePlaybackAudioSession();
-    this.ctx = new AudioContextClass();
-    this.masterGain = this.ctx.createGain();
+    const ctx = new AudioContextClass();
+    this.ctx = ctx;
+    this.masterGain = ctx.createGain();
     this.masterGain.gain.value = MASTER_GAIN * this._volume;
-    this.limiter = this._createLimiter(this.ctx);
+    this.limiter = this._createLimiter(ctx);
     if (this.limiter) {
       this.masterGain.connect(this.limiter);
-      this.limiter.connect(this.ctx.destination);
+      this.limiter.connect(ctx.destination);
     } else {
-      this.masterGain.connect(this.ctx.destination);
+      this.masterGain.connect(ctx.destination);
     }
-    this.ctx.onstatechange = () => this._handleStateChange();
-    this.state = this.ctx.state === 'running' && this.loaded ? 'ready' :
-      this.ctx.state === 'running' ? 'loading' : 'awaitingGesture';
-    return this.ctx;
+    ctx.onstatechange = () => this._handleStateChange();
+    this.state = ctx.state === 'running' && this.loaded ? 'ready' :
+      ctx.state === 'running' ? 'loading' : 'awaitingGesture';
+    this._observeClock();
+    return ctx;
   }
 
   get volume(): number {
@@ -164,10 +203,84 @@ class PianoAudioEngine {
     if (!ctx) return;
     if (ctx.state === 'running') {
       this.state = this.loaded ? 'ready' : 'loading';
+      this._observeClock();
+      this._restoreHeldVoices();
       this._flushQueuedNotes();
     } else if (ctx.state === 'suspended' || (ctx.state as string) === 'interrupted') {
       this.state = 'awaitingGesture';
     }
+  }
+
+  /**
+   * Safari can suspend or interrupt a context while fingers are still down,
+   * which leaves the voices bound to it dead. Rebuild them from the held-key
+   * snapshot, once per resume: whichever of the state-change event or the
+   * resume promise arrives first does the work, and iOS delivers only one of
+   * the two often enough that both have to be able to.
+   */
+  private _restoreHeldVoices(): void {
+    if (!this._restorePending) return;
+    this._restorePending = false;
+    // oxlint-disable-next-line no-useless-spread -- _stopVoice deletes from this.voices while iterating.
+    for (const active of [...this.voices]) this._stopVoice(active);
+    for (const note of this.heldNotes.values()) this.queuedNotes.set(note.keyId, note);
+  }
+
+  /** Record where the context clock stood, and when we looked. */
+  private _observeClock(): void {
+    const time = this.ctx?.currentTime;
+    this._clockAudioTime = typeof time === 'number' ? time : null;
+    this._clockWallTime = nowMs();
+  }
+
+  /**
+   * Whether a context claiming to run has in fact stopped rendering since the
+   * last reading. Only meaningful once enough wall-clock time has passed that a
+   * healthy clock would have moved, so a fast second gesture never accuses a
+   * working context.
+   */
+  private _isClockFrozen(ctx: AudioContext): boolean {
+    const previous = this._clockAudioTime;
+    if (previous === null || typeof ctx.currentTime !== 'number') return false;
+    if (nowMs() - this._clockWallTime < STALL_GESTURE_MIN_ELAPSED_MS) return false;
+    return ctx.currentTime <= previous;
+  }
+
+  /**
+   * Replace a context whose audio unit iOS has torn down. The decoded sample
+   * survives — an AudioBuffer is not bound to the context that decoded it — so
+   * this costs a new output chain and nothing else: no refetch, no redecode.
+   * Keys still under a finger are requeued and sound again on the new context.
+   */
+  private _rebuildContext(): boolean {
+    const stale = this.ctx;
+    if (!stale) return false;
+    // decodeAudioData belongs to the context that started it, so replacing the
+    // context mid-load would throw the download away. Wait for the load to
+    // finish and rebuild then — nothing is audible until it does anyway.
+    if (this.loading) {
+      this._rebuildDeferred = true;
+      return false;
+    }
+    stale.onstatechange = null;
+    // oxlint-disable-next-line no-useless-spread -- _stopVoice deletes from this.voices while iterating.
+    for (const note of [...this.voices]) this._stopVoice(note);
+    this.activeNotes.clear();
+    this.sustainedNotes.clear();
+    for (const note of this.heldNotes.values()) this.queuedNotes.set(note.keyId, note);
+    this.ctx = null;
+    this.masterGain = null;
+    this.limiter = null;
+    try {
+      // Never awaited: a torn-down context can leave close() pending forever,
+      // and the replacement must not wait on it.
+      if (typeof stale.close === 'function') void Promise.resolve(stale.close()).catch(() => {});
+    } catch (_) {
+      // Already closing, or the context refuses to close. Either way it is
+      // unreachable from here now.
+    }
+    this._resume(this._createContext());
+    return true;
   }
 
   /**
@@ -179,28 +292,66 @@ class PianoAudioEngine {
     const ctx = this.ctx;
     if (!ctx || ctx.state === 'closed') return;
     if (ctx.state === 'running') {
+      // 'running' is not proof of sound on iOS. A frozen clock means the audio
+      // unit is gone, and resume() on a context that already claims to run is a
+      // no-op, so the only way back is a new context — built and resumed inside
+      // this gesture so the tap that found the silence also ends it.
+      if (this._isClockFrozen(ctx)) {
+        this._rebuildContext();
+        return;
+      }
       this.state = this.loaded ? 'ready' : 'loading';
+      this._observeClock();
       return;
     }
+    this._resume(ctx);
+  }
+
+  private _resume(ctx: AudioContext): void {
     configurePlaybackAudioSession();
+    this._restorePending = true;
     // Call resume() synchronously to stay within the gesture context.
     // Do NOT cache the promise — if resume is ignored by iOS (no gesture),
     // the promise never resolves and would block all future attempts.
     ctx.resume().then(() => {
+      if (this.ctx !== ctx) return;
       if (ctx.state === 'running') {
         this.state = this.loaded ? 'ready' : 'loading';
-        // Safari can suspend a context while fingers are still down.
-        // Rebuild those voices from the held-key snapshot after resuming.
-        // oxlint-disable-next-line no-useless-spread -- _stopVoice deletes from this.voices while iterating.
-        for (const active of [...this.voices]) this._stopVoice(active);
-        for (const note of this.heldNotes.values()) this.queuedNotes.set(note.keyId, note);
+        this._observeClock();
+        this._restoreHeldVoices();
         this._flushQueuedNotes();
       } else {
         this.state = 'awaitingGesture';
       }
     }).catch(() => {
-      this.state = 'awaitingGesture';
+      if (this.ctx === ctx) this.state = 'awaitingGesture';
     });
+  }
+
+  /**
+   * Confirm that a context claiming to run is really rendering, and replace it
+   * if it is not. Call this on returning to the foreground: iOS restores the
+   * page long before it restores audio, so the clock is polled for a while
+   * before the context is written off. Safe outside a gesture — a replacement
+   * built here may only reach 'suspended', which the next tap resumes.
+   *
+   * Resolves true when the context was replaced.
+   */
+  async verifyRunning(): Promise<boolean> {
+    const ctx = this.ctx;
+    if (!ctx || ctx.state !== 'running' || typeof ctx.currentTime !== 'number') return false;
+    const before = ctx.currentTime;
+    for (let attempt = 0; attempt < STALL_PROBE_ATTEMPTS; attempt += 1) {
+      await delay(STALL_PROBE_INTERVAL_MS);
+      // A context swapped out from under us, or one that has admitted to being
+      // suspended or interrupted, is the gesture path's problem rather than ours.
+      if (this.ctx !== ctx || ctx.state !== 'running') return false;
+      if (ctx.currentTime > before) {
+        this._observeClock();
+        return false;
+      }
+    }
+    return this._rebuildContext();
   }
 
   /** Download and natively decode the shared audio sprite. */
@@ -274,6 +425,10 @@ class PianoAudioEngine {
       throw error;
     } finally {
       this.loading = false;
+      if (this._rebuildDeferred) {
+        this._rebuildDeferred = false;
+        this._rebuildContext();
+      }
     }
   }
 

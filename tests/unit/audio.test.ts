@@ -33,6 +33,64 @@ class LimiterAudioContext extends FakeAudioContext {
   }
 }
 
+/**
+ * A context whose clock only moves when the test moves it, standing in for the
+ * iOS context that keeps reporting 'running' after its audio unit is gone.
+ */
+class StallableAudioContext extends FakeAudioContext {
+  static instances: StallableAudioContext[] = [];
+  currentTime = 0;
+  sources: Array<{ start: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn> }> = [];
+  close = vi.fn(async () => { this.state = 'closed'; });
+  decodeAudioData = vi.fn(async () => ({ length: 44_100, numberOfChannels: 1 } as AudioBuffer));
+
+  constructor() {
+    super();
+    StallableAudioContext.instances.push(this);
+  }
+
+  createBufferSource() {
+    const source = {
+      buffer: null, playbackRate: { value: 0 },
+      connect: vi.fn(), disconnect: vi.fn(),
+      start: vi.fn(), stop: vi.fn(), onended: null,
+    };
+    this.sources.push(source);
+    return source;
+  }
+
+  override createGain() {
+    return {
+      gain: {
+        value: 0,
+        cancelScheduledValues: vi.fn(),
+        setValueAtTime: vi.fn(),
+        linearRampToValueAtTime: vi.fn(),
+        setTargetAtTime: vi.fn(),
+      },
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+    };
+  }
+}
+
+/** A loaded engine on a running StallableAudioContext, with C4 held down. */
+async function stalledEngine() {
+  StallableAudioContext.instances = [];
+  vi.stubGlobal('navigator', {});
+  vi.stubGlobal('window', { AudioContext: StallableAudioContext });
+  const engine = new PianoAudioEngine();
+  await engine.init();
+  const first = engine.ctx as unknown as StallableAudioContext;
+  first.state = 'running';
+  engine.sampleBuffer = {} as AudioBuffer;
+  engine.zones = [{ loKey: 0, hiKey: 127, rootKey: 60, offsetSeconds: 0, durationSeconds: 1 }];
+  engine.loaded = true;
+  engine.ensureRunning();
+  engine.noteOn('C4', 60);
+  return { engine, first };
+}
+
 function responseWith(bytes = new Uint8Array([1, 2, 3, 4])) {
   return {
     ok: true,
@@ -129,7 +187,10 @@ function readyEngine(zones: readonly SampleZone[] = [{
   return { engine, createdSources, createdGains, createdFilters };
 }
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+});
 
 describe('PianoAudioEngine loading', () => {
   it('streams download progress through 90%, then reports decoded completion', async () => {
@@ -620,6 +681,115 @@ describe('PianoAudioEngine playback', () => {
     // Two original voices stopped, two rebuilt from held snapshot.
     expect(engine.voices.size).toBe(2);
     expect(engine.queuedNotes.size).toBe(0);
+  });
+
+  it('replaces a context that claims to run after its clock has frozen', async () => {
+    vi.useFakeTimers();
+    const { engine, first } = await stalledEngine();
+    expect(first.sources).toHaveLength(1);
+
+    // The phone locks: iOS keeps saying 'running' but stops rendering.
+    vi.advanceTimersByTime(60_000);
+    engine.ensureRunning();
+
+    const replacement = StallableAudioContext.instances[1];
+    expect(StallableAudioContext.instances).toHaveLength(2);
+    expect(engine.ctx).toBe(replacement as unknown as AudioContext);
+    expect(first.close).toHaveBeenCalledOnce();
+    // The key still under a finger sounds again on the new context, and the
+    // decoded sample is reused rather than fetched a second time.
+    expect(replacement.sources).toHaveLength(1);
+    expect(engine.sampleBuffer).not.toBeNull();
+    expect(engine.queuedNotes.size).toBe(0);
+    expect(engine.activeNotes.has('C4')).toBe(true);
+    expect(engine.state).toBe('ready');
+  });
+
+  it('leaves a context alone when its clock is still advancing', async () => {
+    vi.useFakeTimers();
+    const { engine, first } = await stalledEngine();
+
+    vi.advanceTimersByTime(60_000);
+    first.currentTime = 60;
+    engine.ensureRunning();
+
+    expect(engine.ctx).toBe(first as unknown as AudioContext);
+    expect(first.close).not.toHaveBeenCalled();
+  });
+
+  it('does not accuse a working context on two gestures in quick succession', async () => {
+    vi.useFakeTimers();
+    const { engine, first } = await stalledEngine();
+
+    // Well inside one render quantum, so a healthy clock has not moved either.
+    vi.advanceTimersByTime(10);
+    engine.ensureRunning();
+
+    expect(engine.ctx).toBe(first as unknown as AudioContext);
+    expect(first.close).not.toHaveBeenCalled();
+  });
+
+  it('clears a stalled context on returning to the foreground', async () => {
+    vi.useFakeTimers();
+    const { engine, first } = await stalledEngine();
+
+    const verified = engine.verifyRunning();
+    await vi.advanceTimersByTimeAsync(750);
+
+    await expect(verified).resolves.toBe(true);
+    expect(engine.ctx).not.toBe(first as unknown as AudioContext);
+    expect(first.close).toHaveBeenCalledOnce();
+    expect(engine.activeNotes.has('C4')).toBe(true);
+  });
+
+  it('keeps the context when audio restarts partway through the probe', async () => {
+    vi.useFakeTimers();
+    const { engine, first } = await stalledEngine();
+
+    const verified = engine.verifyRunning();
+    // iOS takes its time restoring the audio unit, but it does restore it.
+    await vi.advanceTimersByTimeAsync(250);
+    first.currentTime = 0.5;
+    await vi.advanceTimersByTimeAsync(500);
+
+    await expect(verified).resolves.toBe(false);
+    expect(engine.ctx).toBe(first as unknown as AudioContext);
+    expect(first.close).not.toHaveBeenCalled();
+  });
+
+  it('waits for the sample to finish loading before replacing a stalled context', async () => {
+    vi.useFakeTimers();
+    const { engine, first } = await stalledEngine();
+    engine.loading = true;
+
+    vi.advanceTimersByTime(60_000);
+    engine.ensureRunning();
+
+    // Replacing the context here would abort the in-flight decode.
+    expect(engine.ctx).toBe(first as unknown as AudioContext);
+    expect(first.close).not.toHaveBeenCalled();
+
+    // Once the load settles, the deferred replacement happens on its own.
+    vi.stubGlobal('document', { baseURI: 'https://example.test/app/' });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(responseWith()));
+    engine.loaded = false;
+    engine.loading = false;
+    await engine.loadSampleLibrary('./piano.m4a', engine.zones);
+
+    expect(first.decodeAudioData).toHaveBeenCalledOnce();
+    expect(engine.sampleBuffer).not.toBeNull();
+    expect(engine.ctx).not.toBe(first as unknown as AudioContext);
+    expect(first.close).toHaveBeenCalledOnce();
+  });
+
+  it('leaves a suspended context to the next gesture instead of replacing it', async () => {
+    vi.useFakeTimers();
+    const { engine, first } = await stalledEngine();
+    first.state = 'suspended';
+
+    await expect(engine.verifyRunning()).resolves.toBe(false);
+    expect(engine.ctx).toBe(first as unknown as AudioContext);
+    expect(first.close).not.toHaveBeenCalled();
   });
 
   it('marks awaitingGesture when the context is interrupted', () => {

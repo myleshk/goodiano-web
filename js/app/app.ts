@@ -188,10 +188,23 @@ class GoodianoApp {
       document.addEventListener(eventName, resumeOnGesture, { capture: true, passive: true });
     }
     document.addEventListener('visibilitychange', () => {
-      if (document.hidden) this._releaseAllNotes();
+      if (document.hidden) {
+        this._releaseAllNotes();
+        return;
+      }
       // On show: do not call resume() here — visibilitychange is not a user
       // gesture on iOS, so it would be ignored. The gesture listener above
-      // resumes on the next tap.
+      // resumes on the next tap. What does need doing here is checking that
+      // the context is still real: iOS returns from the lock screen or the app
+      // switcher with a context that still reports 'running' but produces
+      // silence, and only verifyRunning() can tell the difference.
+      this.audio.verifyRunning().catch(() => {});
+    });
+    // Coming back through the bfcache restores the page without a
+    // visibilitychange in some Safari versions, and the audio unit is just as
+    // dead on that path.
+    window.addEventListener('pageshow', event => {
+      if ((event as PageTransitionEvent).persisted) this.audio.verifyRunning().catch(() => {});
     });
     window.addEventListener('pagehide', () => this._releaseAllNotes());
   }
