@@ -3,6 +3,8 @@
  * Native Web Audio decoding + polyphonic playback from one AAC audio sprite.
  */
 
+import { describeError, diagnostics } from './diagnostics';
+
 const DEFAULT_VELOCITY = 100;
 // The source samples reach full scale, so a chord sums well past 1.0. Leave
 // headroom here and catch the remaining peaks with the limiter below. The
@@ -141,6 +143,7 @@ class PianoAudioEngine {
     const AudioContextClass = window.AudioContext || (window as WebKitAudioWindow).webkitAudioContext;
     if (!AudioContextClass) {
       this.state = 'error';
+      diagnostics.record('audio', 'web audio unavailable');
       throw new Error('Web Audio is unavailable in this browser');
     }
     configurePlaybackAudioSession();
@@ -159,6 +162,13 @@ class PianoAudioEngine {
     this.state = ctx.state === 'running' && this.loaded ? 'ready' :
       ctx.state === 'running' ? 'loading' : 'awaitingGesture';
     this._observeClock();
+    diagnostics.record('audio', 'context created', {
+      contextState: ctx.state,
+      sampleRate: ctx.sampleRate,
+      baseLatency: ctx.baseLatency,
+      limiter: this.limiter !== null,
+      engineState: this.state,
+    });
     return ctx;
   }
 
@@ -201,6 +211,12 @@ class PianoAudioEngine {
   private _handleStateChange(): void {
     const ctx = this.ctx;
     if (!ctx) return;
+    diagnostics.record('audio', 'context state change', {
+      contextState: ctx.state,
+      currentTime: ctx.currentTime,
+      loaded: this.loaded,
+      restorePending: this._restorePending,
+    });
     if (ctx.state === 'running') {
       this.state = this.loaded ? 'ready' : 'loading';
       this._observeClock();
@@ -221,6 +237,10 @@ class PianoAudioEngine {
   private _restoreHeldVoices(): void {
     if (!this._restorePending) return;
     this._restorePending = false;
+    diagnostics.record('audio', 'restoring held voices', {
+      held: this.heldNotes.size,
+      sounding: this.voices.size,
+    });
     // oxlint-disable-next-line no-useless-spread -- _stopVoice deletes from this.voices while iterating.
     for (const active of [...this.voices]) this._stopVoice(active);
     for (const note of this.heldNotes.values()) this.queuedNotes.set(note.keyId, note);
@@ -260,8 +280,15 @@ class PianoAudioEngine {
     // finish and rebuild then — nothing is audible until it does anyway.
     if (this.loading) {
       this._rebuildDeferred = true;
+      diagnostics.record('audio', 'rebuild deferred until the sample finishes loading');
       return false;
     }
+    diagnostics.record('audio', 'rebuilding context', {
+      contextState: stale.state,
+      currentTime: stale.currentTime,
+      held: this.heldNotes.size,
+      sounding: this.voices.size,
+    });
     stale.onstatechange = null;
     // oxlint-disable-next-line no-useless-spread -- _stopVoice deletes from this.voices while iterating.
     for (const note of [...this.voices]) this._stopVoice(note);
@@ -290,16 +317,30 @@ class PianoAudioEngine {
    */
   ensureRunning(): void {
     const ctx = this.ctx;
-    if (!ctx || ctx.state === 'closed') return;
+    if (!ctx || ctx.state === 'closed') {
+      diagnostics.record('audio', 'gesture found no usable context', { contextState: ctx?.state ?? 'none' });
+      return;
+    }
     if (ctx.state === 'running') {
       // 'running' is not proof of sound on iOS. A frozen clock means the audio
       // unit is gone, and resume() on a context that already claims to run is a
       // no-op, so the only way back is a new context — built and resumed inside
       // this gesture so the tap that found the silence also ends it.
       if (this._isClockFrozen(ctx)) {
+        diagnostics.record('audio', 'gesture found a frozen clock', {
+          currentTime: ctx.currentTime,
+          lastSeen: this._clockAudioTime,
+          sinceLastSeenMs: Math.round(nowMs() - this._clockWallTime),
+        });
         this._rebuildContext();
         return;
       }
+      diagnostics.record('audio', 'gesture on a running context', {
+        currentTime: ctx.currentTime,
+        lastSeen: this._clockAudioTime,
+        sinceLastSeenMs: Math.round(nowMs() - this._clockWallTime),
+        loaded: this.loaded,
+      });
       this.state = this.loaded ? 'ready' : 'loading';
       this._observeClock();
       return;
@@ -310,11 +351,23 @@ class PianoAudioEngine {
   private _resume(ctx: AudioContext): void {
     configurePlaybackAudioSession();
     this._restorePending = true;
+    diagnostics.record('audio', 'resume requested', {
+      contextState: ctx.state,
+      currentTime: ctx.currentTime,
+      held: this.heldNotes.size,
+    });
     // Call resume() synchronously to stay within the gesture context.
     // Do NOT cache the promise — if resume is ignored by iOS (no gesture),
     // the promise never resolves and would block all future attempts.
     ctx.resume().then(() => {
-      if (this.ctx !== ctx) return;
+      if (this.ctx !== ctx) {
+        diagnostics.record('audio', 'resume resolved for a replaced context', { contextState: ctx.state });
+        return;
+      }
+      diagnostics.record('audio', 'resume resolved', {
+        contextState: ctx.state,
+        currentTime: ctx.currentTime,
+      });
       if (ctx.state === 'running') {
         this.state = this.loaded ? 'ready' : 'loading';
         this._observeClock();
@@ -323,7 +376,12 @@ class PianoAudioEngine {
       } else {
         this.state = 'awaitingGesture';
       }
-    }).catch(() => {
+    }).catch(error => {
+      diagnostics.record('audio', 'resume rejected', {
+        contextState: ctx.state,
+        current: this.ctx === ctx,
+        ...describeError(error),
+      });
       if (this.ctx === ctx) this.state = 'awaitingGesture';
     });
   }
@@ -339,18 +397,34 @@ class PianoAudioEngine {
    */
   async verifyRunning(): Promise<boolean> {
     const ctx = this.ctx;
-    if (!ctx || ctx.state !== 'running' || typeof ctx.currentTime !== 'number') return false;
+    if (!ctx || ctx.state !== 'running' || typeof ctx.currentTime !== 'number') {
+      diagnostics.record('audio', 'skipped the stall probe', {
+        contextState: ctx?.state ?? 'none',
+        engineState: this.state,
+      });
+      return false;
+    }
     const before = ctx.currentTime;
+    diagnostics.record('audio', 'probing the context clock', { currentTime: before, loaded: this.loaded });
     for (let attempt = 0; attempt < STALL_PROBE_ATTEMPTS; attempt += 1) {
       await delay(STALL_PROBE_INTERVAL_MS);
       // A context swapped out from under us, or one that has admitted to being
       // suspended or interrupted, is the gesture path's problem rather than ours.
-      if (this.ctx !== ctx || ctx.state !== 'running') return false;
+      if (this.ctx !== ctx || ctx.state !== 'running') {
+        diagnostics.record('audio', 'stall probe abandoned', {
+          contextState: ctx.state,
+          current: this.ctx === ctx,
+          attempt: attempt + 1,
+        });
+        return false;
+      }
       if (ctx.currentTime > before) {
+        diagnostics.record('audio', 'clock is advancing', { currentTime: ctx.currentTime, attempt: attempt + 1 });
         this._observeClock();
         return false;
       }
     }
+    diagnostics.record('audio', 'clock frozen while the context claims to run', { currentTime: ctx.currentTime });
     return this._rebuildContext();
   }
 
@@ -360,8 +434,16 @@ class PianoAudioEngine {
     zones: readonly SampleZone[],
     onProgress?: LoadProgressCallback,
   ): Promise<void> {
-    if (this.loaded || this.loading) return;
+    if (this.loaded || this.loading) {
+      diagnostics.record('audio', 'load skipped', { loaded: this.loaded, loading: this.loading });
+      return;
+    }
     this.loading = true;
+    const startedAt = nowMs();
+    diagnostics.record('audio', 'load started', {
+      url,
+      online: typeof navigator === 'undefined' ? undefined : navigator.onLine,
+    });
     try {
       const ctx = await this.init();
       const controller = new AbortController();
@@ -377,9 +459,14 @@ class PianoAudioEngine {
       } finally {
         clearTimeout(timeout);
       }
+      const contentLength = Number(response.headers?.get('content-length')) || 0;
+      diagnostics.record('audio', 'sample response received', {
+        status: response.status,
+        contentLength,
+        elapsedMs: Math.round(nowMs() - startedAt),
+      });
       if (!response.ok) throw new Error(`Audio request failed (${response.status})`);
 
-      const contentLength = Number(response.headers?.get('content-length')) || 0;
       let encodedAudio: ArrayBuffer;
       if (response.body && typeof response.body.getReader === 'function') {
         const reader = response.body.getReader();
@@ -408,6 +495,7 @@ class PianoAudioEngine {
       if (encodedAudio.byteLength === 0) throw new Error('Audio response is empty');
       onProgress?.(DOWNLOAD_PROGRESS_SHARE);
 
+      const decodeStartedAt = nowMs();
       const decoded = await ctx.decodeAudioData(encodedAudio);
       if (decoded.length === 0 || decoded.numberOfChannels === 0) {
         throw new Error('Decoded audio is empty');
@@ -416,12 +504,26 @@ class PianoAudioEngine {
       this.zones = zones;
       this.loaded = true;
       this.state = ctx.state === 'running' ? 'ready' : 'awaitingGesture';
+      diagnostics.record('audio', 'sample decoded', {
+        bytes: encodedAudio.byteLength,
+        channels: decoded.numberOfChannels,
+        sampleRate: decoded.sampleRate,
+        decodeMs: Math.round(nowMs() - decodeStartedAt),
+        totalMs: Math.round(nowMs() - startedAt),
+        contextState: ctx.state,
+        engineState: this.state,
+      });
       onProgress?.(1);
       this._flushQueuedNotes();
     } catch (error) {
       this.sampleBuffer = null;
       this.zones = [];
       this.state = 'error';
+      diagnostics.record('audio', 'load failed', {
+        elapsedMs: Math.round(nowMs() - startedAt),
+        online: typeof navigator === 'undefined' ? undefined : navigator.onLine,
+        ...describeError(error),
+      });
       throw error;
     } finally {
       this.loading = false;
@@ -490,7 +592,18 @@ class PianoAudioEngine {
     const note = { keyId, midiNote, velocity };
     this.heldNotes.set(keyId, note);
     this.queuedNotes.set(keyId, note);
-    if (!this.ctx || !this.sampleBuffer || this.ctx.state !== 'running') return;
+    if (!this.ctx || !this.sampleBuffer || this.ctx.state !== 'running') {
+      // The one symptom a player reports as "no sound": keys arriving at an
+      // engine that cannot play them. Which of the three is missing says why.
+      diagnostics.record('audio', 'note queued, engine not playable', {
+        keyId,
+        contextState: this.ctx?.state ?? 'none',
+        loaded: this.loaded,
+        engineState: this.state,
+        queued: this.queuedNotes.size,
+      });
+      return;
+    }
     this._startNote(note);
   }
 
@@ -535,10 +648,24 @@ class PianoAudioEngine {
       voice.source.onended = () => this._finishVoice(keyId, active, voice);
     }
     this.queuedNotes.delete(keyId);
+    // Consecutive notes fold into one entry, so a whole passage costs a single
+    // line that still shows the clock moving and the gain the notes were given.
+    // Every value here is one the engine already holds: a log line in the note
+    // path must not be able to fail on a node it went looking for.
+    diagnostics.record('audio', 'note started', {
+      keyId,
+      currentTime: this.ctx.currentTime,
+      voices: this.voices.size,
+      velocityGain: Number(velocityGain.toFixed(3)),
+      volume: this._volume,
+    });
   }
 
   _flushQueuedNotes(): void {
     if (!this.ctx || this.ctx.state !== 'running' || !this.sampleBuffer) return;
+    if (this.queuedNotes.size > 0) {
+      diagnostics.record('audio', 'flushing queued notes', { queued: this.queuedNotes.size });
+    }
     for (const note of this.queuedNotes.values()) this._startNote(note);
   }
 

@@ -25,6 +25,14 @@ import {
   saveVolumePercent,
 } from './preferences';
 import { KeyboardRenderer } from './render';
+import {
+  describeError,
+  diagnostics,
+  diagnosticsFileName,
+  exportDiagnosticsReport,
+  installGlobalErrorCapture,
+  navigationType,
+} from './diagnostics';
 import type { KeyboardLayout } from './keyboard';
 import type { PianoKey } from './model';
 import { audioSpriteUrl, commit, version } from 'virtual:goodiano-assets';
@@ -72,6 +80,7 @@ class GoodianoApp {
   computerKeyboard: ComputerKeyboardController | null = null;
   private _sustainLatched = false;
   private _keyLabelsVisible = true;
+  private _logExportStatus: TranslationKey | null = null;
 
   constructor(installPromotion: InstallPromotionController = new InstallPromotionController()) {
     this.installPromotion = installPromotion;
@@ -95,12 +104,20 @@ class GoodianoApp {
     if (versionEl) {
       versionEl.textContent = commit ? `Goodiano · v${version} (${commit})` : `Goodiano · v${version}`;
     }
+    diagnostics.record('app', 'app starting', {
+      visibility: document.visibilityState,
+      online: navigator.onLine,
+      version: commit ? `${version} (${commit})` : version,
+      navigation: navigationType(),
+    });
     this._setupLocaleControl();
     this._setupSettingsPanel();
+    this._setupDiagnosticsExport();
     const loadingOverlay = this.loadingOverlay;
     loadingOverlay?.querySelector('.loading-retry')?.addEventListener('click', () => this._retry());
     navigator.serviceWorker?.addEventListener('message', event => {
       const type = event.data?.type;
+      diagnostics.record('app', 'service worker message', { type });
       if (type === 'CACHE_ERROR') this._showStorageWarning();
       else if (type === 'CACHE_READY') this._dismissLoading();
       else if (type === 'GOODIANO_DEV_SW_CLEANUP') this.reloadOnce();
@@ -191,8 +208,18 @@ class GoodianoApp {
       document.addEventListener(eventName, resumeOnGesture, { capture: true, passive: true });
     }
     document.addEventListener('visibilitychange', () => {
+      diagnostics.record('page', 'visibility change', {
+        visibility: document.visibilityState,
+        online: navigator.onLine,
+        contextState: this.audio.ctx?.state ?? 'none',
+        currentTime: this.audio.ctx?.currentTime,
+      });
       if (document.hidden) {
         this._releaseAllNotes();
+        // The events that explain a silent return are recorded before the app
+        // is backgrounded, and a backgrounded page may never get another turn
+        // to write them out, so persist them at the last moment we control.
+        diagnostics.flush();
         return;
       }
       // On show: do not call resume() here — visibilitychange is not a user
@@ -207,9 +234,27 @@ class GoodianoApp {
     // visibilitychange in some Safari versions, and the audio unit is just as
     // dead on that path.
     window.addEventListener('pageshow', event => {
-      if ((event as PageTransitionEvent).persisted) this.audio.verifyRunning().catch(() => {});
+      const persisted = (event as PageTransitionEvent).persisted;
+      diagnostics.record('page', 'pageshow', { persisted, contextState: this.audio.ctx?.state ?? 'none' });
+      if (persisted) this.audio.verifyRunning().catch(() => {});
     });
-    window.addEventListener('pagehide', () => this._releaseAllNotes());
+    window.addEventListener('pagehide', event => {
+      diagnostics.record('page', 'pagehide', { persisted: (event as PageTransitionEvent).persisted });
+      this._releaseAllNotes();
+      diagnostics.flush();
+    });
+    // Losing the network while backgrounded is the other way a wake-up ends in
+    // silence: the sprite is still being fetched and the request dies with it.
+    window.addEventListener('online', () => diagnostics.record('page', 'network online'));
+    window.addEventListener('offline', () => diagnostics.record('page', 'network offline'));
+    // Chromium-only lifecycle states, dispatched on the document. Nothing
+    // depends on them, but a frozen page explains a stopped clock as well as
+    // an iOS teardown does.
+    document.addEventListener('freeze', () => {
+      diagnostics.record('page', 'page frozen');
+      diagnostics.flush();
+    });
+    document.addEventListener('resume', () => diagnostics.record('page', 'page resumed'));
   }
 
   private _requiredElement(selector: string): HTMLElement {
@@ -227,6 +272,7 @@ class GoodianoApp {
       );
     } catch (err) {
       console.error('Failed to load audio:', err);
+      diagnostics.record('app', 'audio load reported to the player', describeError(err));
       // Show error state
       if (this.loadingOverlay) {
         this._setLoadingMessage(err instanceof DOMException && err.name === 'AbortError'
@@ -287,6 +333,7 @@ class GoodianoApp {
     // A loaded sprite means only the offline copy failed: ask the worker to
     // store it again rather than re-downloading and re-decoding the audio.
     const storageOnly = this.audio.loaded;
+    diagnostics.record('app', 'player asked to retry', { storageOnly });
     overlay.classList.remove('recoverable-error');
     if (!storageOnly) overlay.classList.remove('as-toast');
     this._setLoadingMessage('loading.retrying');
@@ -504,6 +551,70 @@ class GoodianoApp {
     });
   }
 
+  /**
+   * Wire the log export. Audio that dies on the way back from the lock screen
+   * leaves nothing behind that a phone can show, and no console to open, so
+   * the export is how the recorded evidence gets off the device.
+   */
+  private _setupDiagnosticsExport(): void {
+    this.settingsPanel?.querySelector<HTMLButtonElement>('.log-export-button')
+      ?.addEventListener('click', () => { void this._exportDiagnostics(); });
+  }
+
+  async _exportDiagnostics(): Promise<void> {
+    diagnostics.record('app', 'log export requested');
+    const report = diagnostics.buildReport(this._audioSnapshot());
+    diagnostics.flush();
+    try {
+      const method = await exportDiagnosticsReport(report, diagnosticsFileName());
+      if (method === 'cancelled') this._setLogExportStatus(null);
+      else this._setLogExportStatus(method === 'share' ? 'log.shared' : 'log.saved');
+    } catch (error) {
+      diagnostics.record('error', 'log export failed', describeError(error));
+      // A browser that will neither share nor download the file can still put
+      // it on the clipboard, which is enough to paste into a message.
+      this._setLogExportStatus(await this._copyReport(report) ? 'log.copied' : 'log.failed');
+    }
+  }
+
+  private async _copyReport(report: string): Promise<boolean> {
+    try {
+      await navigator.clipboard?.writeText(report);
+      return Boolean(navigator.clipboard);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  private _setLogExportStatus(key: TranslationKey | null): void {
+    this._logExportStatus = key;
+    const status = this.settingsPanel?.querySelector<HTMLElement>('.log-export-status');
+    if (!status) return;
+    status.textContent = key ? t(key) : '';
+    status.hidden = key === null;
+  }
+
+  /** What the audio engine believes about itself, as the report is written. */
+  private _audioSnapshot(): Record<string, unknown> {
+    const { audio } = this;
+    return {
+      engineState: audio.state,
+      loaded: audio.loaded,
+      loading: audio.loading,
+      contextState: audio.ctx?.state ?? 'none',
+      currentTime: audio.ctx?.currentTime,
+      sampleRate: audio.ctx?.sampleRate,
+      masterGain: audio.masterGain?.gain.value,
+      volume: audio.volume,
+      soundingVoices: audio.voices.size,
+      heldKeys: audio.heldNotes.size,
+      queuedKeys: audio.queuedNotes.size,
+      sustainedKeys: audio.sustainedNotes.size,
+      sustainPedal: audio.sustainEnabled,
+      visibility: document.visibilityState,
+    };
+  }
+
   /** Announce a state change that has no visible text of its own. */
   private _announce(message: string): void {
     const announcer = document.querySelector<HTMLElement>('.keyboard-announcer');
@@ -694,6 +805,8 @@ class GoodianoApp {
   }
 
   reloadApp(): void {
+    diagnostics.record('app', 'reload requested from settings');
+    diagnostics.flush();
     // The service worker serves the audio sprite from its cache, so this reload
     // refreshes app files without downloading the audio asset again.
     const url = new URL(window.location.href);
@@ -754,6 +867,7 @@ class GoodianoApp {
     }
     const debugButton = this.settingsPanel?.querySelector<HTMLButtonElement>('.velocity-debug-toggle');
     if (debugButton) debugButton.textContent = t(this.velocityDebug?.hidden === false ? 'debug.hide' : 'debug.show');
+    this._setLogExportStatus(this._logExportStatus);
     if (this._lastVelocityDebug) {
       this._updateVelocityDebug(this._lastVelocityDebug.key, this._lastVelocityDebug.velocity);
     } else {
@@ -768,6 +882,7 @@ class GoodianoApp {
 // Bootstrap
 initializeLocalization();
 translateDocument();
+installGlobalErrorCapture();
 registerServiceWorker();
 const installPromotion = new InstallPromotionController();
 installPromotion.init();

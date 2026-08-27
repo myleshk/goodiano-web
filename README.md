@@ -16,6 +16,7 @@ Play Goodiano at [goodiano.myles.hk](https://goodiano.myles.hk).
 - **Computer keyboard** — `Z`–`M` and `Q`–`P` play two octaves with the black keys on the row above; `←`/`→` shift octave and scroll the view; `Shift` and `Alt` accent or soften. Mapped by physical key position, so non-QWERTY layouts work unchanged.
 - **Sustain pedal** — Hold `Space`, or latch the pedal from the settings panel. Released keys keep ringing until the pedal lifts.
 - **Output settings** — Master volume and a note-name toggle, both remembered between visits.
+- **Diagnostics log** — The app records what the page and the audio engine did, and the settings panel exports it as a text file to share or download.
 
 ## Tech Stack
 
@@ -39,6 +40,7 @@ web/
 │   ├── model.ts            # Piano data model (Pitch enum, 88-key generation)
 │   ├── audio.ts            # Audio-sprite loader + Web Audio playback engine
 │   ├── sample-zones.ts     # Generated sample offsets and pitch mappings
+│   ├── diagnostics.ts      # Lifecycle event log + settings-panel export
 │   ├── keyboard.ts         # Layout computation & hit-testing
 │   ├── input.ts            # Pointer / keyboard input controller
 │   └── render.ts           # Keyboard + mini-map rendering
@@ -101,6 +103,27 @@ and adds AAC-frame-aligned silent guards between samples.
 - The versioned app shell is precached. The hashed audio sprite is cached on first successful fetch, so the piano works fully offline afterwards.
 - New workers activate immediately, remove legacy `goodiano-*` shell caches, and refresh an open app once. Development mode never precaches source URLs; on the dedicated development origin it instead serves a one-shot cleanup worker that removes legacy service workers and caches, reloads controlled pages, then unregisters itself.
 - If audio storage fails, a non-blocking "retry" prompt appears and the app still runs once online.
+
+## Diagnostics Log
+
+Audio that dies after the phone comes back from the lock screen leaves nothing
+behind: there is no console to open on a phone, and the page often reloads
+before anyone can look. So the app keeps its own record — the audio context
+being created, resumed, found frozen and replaced, the sample download and
+decode, every visibility change, and keys that arrive at an engine that cannot
+play them. Repeated events fold into one line with a count, so a burst of
+tapping cannot push out the history that explains it.
+
+**Settings → Download Log** writes the last two sessions to a text file. On iOS
+the share sheet opens first, so the file can go straight into a message; other
+browsers download it, and a browser that will do neither gets it on the
+clipboard. The log is stored in `localStorage` under `goodiano.diagnostics.v1`
+and is flushed whenever the app is backgrounded, which is what makes the
+session *before* an iOS-forced reload survive to be read.
+
+The file carries the build and commit, the user agent, language, time zone,
+display mode, and online state, plus the engine's own state at the moment of
+export. It records which keys were played, and nothing else about the player.
 
 ## Browser Support
 
