@@ -5,7 +5,7 @@
  */
 
 import { generateFullPianoKeys } from './model';
-import { DEFAULT_VELOCITY, PianoAudioEngine } from './audio';
+import { DEFAULT_VELOCITY, describeAudioSession, PianoAudioEngine } from './audio';
 import { YAMAHA_U1_ZONES } from './sample-zones';
 import {
   computeLayout,
@@ -213,6 +213,9 @@ class GoodianoApp {
         online: navigator.onLine,
         contextState: this.audio.ctx?.state ?? 'none',
         currentTime: this.audio.ctx?.currentTime,
+        // Recorded on the way out as well as the way in: what the session was
+        // before the app was backgrounded is half of what a silent return means.
+        ...describeAudioSession(),
       });
       if (document.hidden) {
         this._releaseAllNotes();
@@ -603,7 +606,6 @@ class GoodianoApp {
       loading: audio.loading,
       contextState: audio.ctx?.state ?? 'none',
       currentTime: audio.ctx?.currentTime,
-      sampleRate: audio.ctx?.sampleRate,
       masterGain: audio.masterGain?.gain.value,
       volume: audio.volume,
       soundingVoices: audio.voices.size,
@@ -612,6 +614,7 @@ class GoodianoApp {
       sustainedKeys: audio.sustainedNotes.size,
       sustainPedal: audio.sustainEnabled,
       visibility: document.visibilityState,
+      ...audio.describeOutput(),
     };
   }
 

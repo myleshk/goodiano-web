@@ -4,6 +4,7 @@
  */
 
 import { describeError, diagnostics } from './diagnostics';
+import type { DiagnosticData } from './diagnostics';
 
 const DEFAULT_VELOCITY = 100;
 // The source samples reach full scale, so a chord sums well past 1.0. Leave
@@ -48,6 +49,23 @@ const STALL_PROBE_ATTEMPTS = 3;
 // A gesture can only prove a stall once enough wall-clock time has passed for a
 // healthy clock to have visibly moved since the last reading.
 const STALL_GESTURE_MIN_ELAPSED_MS = 250;
+// The other way a context goes quiet is subtler than a stopped clock: the clock
+// keeps moving, the graph keeps rendering, and the output goes nowhere because
+// iOS took the audio session away and never gave it back. Nothing in the Web
+// Audio API reports that, so the output is tapped and measured instead.
+const OUTPUT_TAP_FFT_SIZE = 2048;
+// A note that is really sounding is orders of magnitude above this a moment
+// after it starts. Only true digital silence reads below it.
+const SILENT_OUTPUT_PEAK = 1e-4;
+// Long enough after the attack for the sample to be well underway, short enough
+// that the shortest usable tap still lands inside the note.
+const OUTPUT_PROBE_DELAY_MS = 140;
+// One silent reading is a scheduling accident. A run of them is a dead output.
+const SILENT_OUTPUT_READINGS = 3;
+// Healthy readings are logged sparsely: the point of a healthy one is to prove
+// the output was live at all, and a line per note would crowd out the events
+// that explain a silence.
+const OUTPUT_LEVEL_LOG_INTERVAL_MS = 5_000;
 
 function nowMs(): number {
   return typeof performance !== 'undefined' && typeof performance.now === 'function'
@@ -84,24 +102,85 @@ interface ActiveNote {
   stolen: boolean;
 }
 interface WebKitAudioWindow extends Window { webkitAudioContext?: typeof AudioContext }
-interface ExperimentalAudioSession { type: 'playback' }
+/** iOS reports 'auto' | 'playback' | ... here, and may revert what we set. */
+interface ExperimentalAudioSession { type: string; state?: string }
 interface NavigatorWithAudioSession extends Navigator { audioSession?: ExperimentalAudioSession }
 
-function configurePlaybackAudioSession(): void {
+function audioSession(): ExperimentalAudioSession | undefined {
   try {
-    if (typeof navigator === 'undefined') return;
-    const audioSession = (navigator as NavigatorWithAudioSession).audioSession;
-    if (audioSession) audioSession.type = 'playback';
+    if (typeof navigator === 'undefined') return undefined;
+    return (navigator as NavigatorWithAudioSession).audioSession;
   } catch (_) {
-    // The experimental API may reject assignment. Web Audio
-    // should continue to initialize with the browser's default session type.
+    // Reading the experimental property throws in some restricted contexts.
+    return undefined;
   }
+}
+
+/**
+ * What iOS currently thinks this page's audio is for. Undefined everywhere the
+ * Audio Session API is absent, which is every browser but Safari.
+ */
+export function describeAudioSession(): DiagnosticData {
+  const session = audioSession();
+  if (!session) return {};
+  try {
+    return { audioSessionType: session.type, audioSessionState: session.state };
+  } catch (_) {
+    return { audioSessionType: 'unreadable' };
+  }
+}
+
+/**
+ * Claim the playback session, and say so in the log when the claim had to be
+ * remade. iOS hands the session to whatever app interrupted us and does not
+ * hand it back, which leaves a context that still runs, still renders, and is
+ * routed nowhere — so every path that could be a return from an interruption
+ * re-asserts it, and the reason it was re-asserted is what the log records.
+ */
+function configurePlaybackAudioSession(reason: string): void {
+  const session = audioSession();
+  if (!session) return;
+  try {
+    const before = session.type;
+    if (before === 'playback') return;
+    session.type = 'playback';
+    diagnostics.record('audio', 'audio session claimed for playback', {
+      reason,
+      before,
+      after: session.type,
+      state: session.state,
+    });
+  } catch (error) {
+    // The experimental API may reject assignment. Web Audio should continue to
+    // work on the browser's default session type, quieter than we asked for.
+    diagnostics.record('audio', 'audio session refused configuration', { reason, ...describeError(error) });
+  }
+}
+
+/**
+ * Everything about where the samples are supposed to be going. A route that
+ * changed while the app was backgrounded is the other half of the silent-return
+ * story, and none of it can be inferred from the context state.
+ */
+function describeRoute(ctx: AudioContext): DiagnosticData {
+  const destination: AudioDestinationNode | undefined = ctx.destination;
+  return {
+    sampleRate: ctx.sampleRate,
+    channels: destination?.channelCount,
+    maxChannels: destination?.maxChannelCount,
+    baseLatency: ctx.baseLatency,
+    // Declared as always present, absent in Safari; undefined is a real answer.
+    outputLatency: ctx.outputLatency as number | undefined,
+    ...describeAudioSession(),
+  };
 }
 
 class PianoAudioEngine {
   ctx: AudioContext | null = null;
   masterGain: GainNode | null = null;
   limiter: DynamicsCompressorNode | null = null;
+  /** Side tap on the output, used to measure what the graph really renders. */
+  outputTap: AnalyserNode | null = null;
   sampleBuffer: AudioBuffer | null = null;
   zones: readonly SampleZone[] = [];
   /** Voices still sounding, including notes in their release envelope. */
@@ -127,6 +206,21 @@ class PianoAudioEngine {
   private _restorePending = false;
   /** A stalled context was found mid-load and still needs replacing. */
   private _rebuildDeferred = false;
+  /** Scratch buffer for the output tap, sized once per context. */
+  private _outputSamples: Float32Array<ArrayBuffer> | null = null;
+  private _outputProbeTimer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * The tap has read a real signal at least once on this context. Until it
+   * has, a zero reading says nothing about the audio — it may just as well be
+   * a browser that never renders a node with no path to the destination — so
+   * silence is only believed, and only acted on, after the tap has proven it
+   * can see sound at all.
+   */
+  private _outputTapProven = false;
+  private _silentReadings = 0;
+  /** Peak of the last reading, for the export snapshot. Null once nothing has been measured. */
+  private _lastOutputPeak: number | null = null;
+  private _lastOutputLevelLog = 0;
 
   /** Initialize AudioContext (must be resumed from a user gesture on iOS). */
   async init(): Promise<AudioContext> {
@@ -146,7 +240,7 @@ class PianoAudioEngine {
       diagnostics.record('audio', 'web audio unavailable');
       throw new Error('Web Audio is unavailable in this browser');
     }
-    configurePlaybackAudioSession();
+    configurePlaybackAudioSession('context created');
     const ctx = new AudioContextClass();
     this.ctx = ctx;
     this.masterGain = ctx.createGain();
@@ -158,16 +252,24 @@ class PianoAudioEngine {
     } else {
       this.masterGain.connect(ctx.destination);
     }
+    // Tapped off the last node before the destination, so the reading is the
+    // finished mix: every gain, the limiter, and nothing the device does after.
+    this.outputTap = this._createOutputTap(ctx);
+    if (this.outputTap) (this.limiter ?? this.masterGain).connect(this.outputTap);
+    this._outputSamples = null;
+    this._outputTapProven = false;
+    this._silentReadings = 0;
+    this._lastOutputPeak = null;
     ctx.onstatechange = () => this._handleStateChange();
     this.state = ctx.state === 'running' && this.loaded ? 'ready' :
       ctx.state === 'running' ? 'loading' : 'awaitingGesture';
     this._observeClock();
     diagnostics.record('audio', 'context created', {
       contextState: ctx.state,
-      sampleRate: ctx.sampleRate,
-      baseLatency: ctx.baseLatency,
       limiter: this.limiter !== null,
+      outputTap: this.outputTap !== null,
       engineState: this.state,
+      ...describeRoute(ctx),
     });
     return ctx;
   }
@@ -201,6 +303,133 @@ class PianoAudioEngine {
     limiter.attack.value = LIMITER_ATTACK_SECONDS;
     limiter.release.value = LIMITER_RELEASE_SECONDS;
     return limiter;
+  }
+
+  /**
+   * Build the output tap, or null where the node is unavailable. It is a side
+   * branch with nothing connected after it: an analyser reads whatever its
+   * input node renders, and that node is already rendering because it also
+   * feeds the destination, so the tap costs a copy and changes no audio.
+   */
+  private _createOutputTap(ctx: AudioContext): AnalyserNode | null {
+    if (typeof ctx.createAnalyser !== 'function') return null;
+    try {
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = OUTPUT_TAP_FFT_SIZE;
+      return analyser;
+    } catch (_) {
+      // A browser that refuses the node leaves us with the clock probe alone.
+      return null;
+    }
+  }
+
+  /**
+   * The largest sample magnitude in the tap's most recent window, 0 to 1.
+   * Null when there is no usable tap, which is not the same as a zero reading:
+   * zero is a claim about the audio, null is the absence of one.
+   */
+  measureOutputPeak(): number | null {
+    const analyser = this.outputTap;
+    if (!analyser) return null;
+    try {
+      const size = analyser.fftSize;
+      if (typeof analyser.getFloatTimeDomainData === 'function') {
+        const samples = this._outputSamples?.length === size
+          ? this._outputSamples
+          : (this._outputSamples = new Float32Array(size));
+        analyser.getFloatTimeDomainData(samples);
+        let peak = 0;
+        for (const sample of samples) {
+          const magnitude = Math.abs(sample);
+          if (magnitude > peak) peak = magnitude;
+        }
+        return peak;
+      }
+      if (typeof analyser.getByteTimeDomainData === 'function') {
+        // The byte view is the same waveform centred on 128.
+        const bytes = new Uint8Array(size);
+        analyser.getByteTimeDomainData(bytes);
+        let peak = 0;
+        for (const sample of bytes) {
+          const magnitude = Math.abs(sample - 128) / 128;
+          if (magnitude > peak) peak = magnitude;
+        }
+        return peak;
+      }
+      return null;
+    } catch (_) {
+      // A tap that throws is a tap we have no reading from.
+      return null;
+    }
+  }
+
+  /**
+   * What the output tap has seen, for the exported report. `outputPeak` is the
+   * last reading rather than a fresh one: a reading taken with nothing sounding
+   * is legitimately zero and would only mislead whoever reads the log.
+   */
+  describeOutput(): DiagnosticData {
+    const ctx = this.ctx;
+    return {
+      outputTap: this.outputTap ? (this._outputTapProven ? 'proven' : 'unproven') : 'unavailable',
+      outputPeak: this._lastOutputPeak ?? undefined,
+      silentReadings: this._silentReadings,
+      ...(ctx ? describeRoute(ctx) : describeAudioSession()),
+    };
+  }
+
+  /**
+   * Read the output shortly after a note starts, and decide what the reading
+   * means. Sound proves the whole chain down to the destination is alive, and
+   * anything the player still cannot hear is below us: the audio session, the
+   * route, or the ringer switch. Silence, from a tap that has proved it can see
+   * sound, proves the opposite — the context is rendering nothing — and that is
+   * a context worth replacing, which is the one cure iOS responds to.
+   */
+  private _probeOutputLevel(): void {
+    const ctx = this.ctx;
+    if (!ctx || ctx.state !== 'running' || this.voices.size === 0) return;
+    const peak = this.measureOutputPeak();
+    if (peak === null) return;
+    this._lastOutputPeak = peak;
+    const silent = peak < SILENT_OUTPUT_PEAK;
+    if (!silent) this._outputTapProven = true;
+    this._silentReadings = silent && this._outputTapProven ? this._silentReadings + 1 : 0;
+    const now = nowMs();
+    if (silent || now - this._lastOutputLevelLog >= OUTPUT_LEVEL_LOG_INTERVAL_MS) {
+      if (!silent) this._lastOutputLevelLog = now;
+      diagnostics.record('audio', silent ? 'output tap reads silence' : 'output level', {
+        peak: Number(peak.toFixed(5)),
+        voices: this.voices.size,
+        currentTime: ctx.currentTime,
+        proven: this._outputTapProven,
+        ...describeRoute(ctx),
+      });
+    }
+    if (this._silentReadings >= SILENT_OUTPUT_READINGS) {
+      this._silentReadings = 0;
+      diagnostics.record('audio', 'replacing a context that renders silence', {
+        voices: this.voices.size,
+        currentTime: ctx.currentTime,
+      });
+      this._rebuildContext();
+    }
+  }
+
+  /** Queue one reading per burst of notes, rather than one per note. */
+  private _scheduleOutputProbe(): void {
+    if (!this.outputTap || this._outputProbeTimer !== null) return;
+    if (typeof setTimeout !== 'function') return;
+    this._outputProbeTimer = setTimeout(() => {
+      this._outputProbeTimer = null;
+      this._probeOutputLevel();
+    }, OUTPUT_PROBE_DELAY_MS);
+  }
+
+  private _cancelOutputProbe(): void {
+    if (this._outputProbeTimer === null) return;
+    clearTimeout(this._outputProbeTimer);
+    this._outputProbeTimer = null;
   }
 
   /**
@@ -290,6 +519,7 @@ class PianoAudioEngine {
       sounding: this.voices.size,
     });
     stale.onstatechange = null;
+    this._cancelOutputProbe();
     // oxlint-disable-next-line no-useless-spread -- _stopVoice deletes from this.voices while iterating.
     for (const note of [...this.voices]) this._stopVoice(note);
     this.activeNotes.clear();
@@ -298,6 +528,7 @@ class PianoAudioEngine {
     this.ctx = null;
     this.masterGain = null;
     this.limiter = null;
+    this.outputTap = null;
     try {
       // Never awaited: a torn-down context can leave close() pending forever,
       // and the replacement must not wait on it.
@@ -316,6 +547,10 @@ class PianoAudioEngine {
    * microtask/task boundary (e.g. after await).
    */
   ensureRunning(): void {
+    // Before the state check, not after: the branch a silent return takes is
+    // the one where the context still claims to be running, and that branch
+    // used to return without ever reclaiming the session iOS had taken away.
+    configurePlaybackAudioSession('gesture');
     const ctx = this.ctx;
     if (!ctx || ctx.state === 'closed') {
       diagnostics.record('audio', 'gesture found no usable context', { contextState: ctx?.state ?? 'none' });
@@ -340,6 +575,7 @@ class PianoAudioEngine {
         lastSeen: this._clockAudioTime,
         sinceLastSeenMs: Math.round(nowMs() - this._clockWallTime),
         loaded: this.loaded,
+        ...describeAudioSession(),
       });
       this.state = this.loaded ? 'ready' : 'loading';
       this._observeClock();
@@ -349,7 +585,7 @@ class PianoAudioEngine {
   }
 
   private _resume(ctx: AudioContext): void {
-    configurePlaybackAudioSession();
+    configurePlaybackAudioSession('resume');
     this._restorePending = true;
     diagnostics.record('audio', 'resume requested', {
       contextState: ctx.state,
@@ -396,6 +632,9 @@ class PianoAudioEngine {
    * Resolves true when the context was replaced.
    */
   async verifyRunning(): Promise<boolean> {
+    // A foreground return is the moment the session is most likely to have been
+    // handed to something else, and reclaiming it needs no gesture.
+    configurePlaybackAudioSession('foreground');
     const ctx = this.ctx;
     if (!ctx || ctx.state !== 'running' || typeof ctx.currentTime !== 'number') {
       diagnostics.record('audio', 'skipped the stall probe', {
@@ -405,7 +644,11 @@ class PianoAudioEngine {
       return false;
     }
     const before = ctx.currentTime;
-    diagnostics.record('audio', 'probing the context clock', { currentTime: before, loaded: this.loaded });
+    diagnostics.record('audio', 'probing the context clock', {
+      currentTime: before,
+      loaded: this.loaded,
+      ...describeRoute(ctx),
+    });
     for (let attempt = 0; attempt < STALL_PROBE_ATTEMPTS; attempt += 1) {
       await delay(STALL_PROBE_INTERVAL_MS);
       // A context swapped out from under us, or one that has admitted to being
@@ -419,8 +662,16 @@ class PianoAudioEngine {
         return false;
       }
       if (ctx.currentTime > before) {
-        diagnostics.record('audio', 'clock is advancing', { currentTime: ctx.currentTime, attempt: attempt + 1 });
+        // The clock says the audio unit is alive. It says nothing about whether
+        // the samples reach a speaker, so the output tap picks the question up
+        // from here, on the next note the player actually presses.
+        diagnostics.record('audio', 'clock is advancing', {
+          currentTime: ctx.currentTime,
+          attempt: attempt + 1,
+          ...describeRoute(ctx),
+        });
         this._observeClock();
+        this._silentReadings = 0;
         return false;
       }
     }
@@ -659,6 +910,9 @@ class PianoAudioEngine {
       velocityGain: Number(velocityGain.toFixed(3)),
       volume: this._volume,
     });
+    // A note that started is the only chance to find out whether anything is
+    // coming out, so every burst of them buys one reading of the output.
+    this._scheduleOutputProbe();
   }
 
   _flushQueuedNotes(): void {

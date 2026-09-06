@@ -16,6 +16,21 @@ class FakeAudioContext {
   }
 }
 
+/**
+ * Stands in for navigator.audioSession: readable as well as writable, the way
+ * Safari's is, so a claim that is already held reads as a no-op rather than as
+ * another assignment. `events` records only the assignments that really happen.
+ */
+function fakeAudioSession(initialType = 'auto', events: string[] = []) {
+  let type = initialType;
+  return {
+    events,
+    state: 'active',
+    get type() { return type; },
+    set type(value: string) { type = value; events.push(`session:${value}`); },
+  };
+}
+
 /** A context that also offers the limiter node, so routing can be asserted. */
 class LimiterAudioContext extends FakeAudioContext {
   compressor = {
@@ -43,6 +58,20 @@ class StallableAudioContext extends FakeAudioContext {
   sources: Array<{ start: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn> }> = [];
   close = vi.fn(async () => { this.state = 'closed'; });
   decodeAudioData = vi.fn(async () => ({ length: 44_100, numberOfChannels: 1 } as AudioBuffer));
+  /** What the output tap will read: the peak this context is "rendering". */
+  tapPeak = 0;
+
+  createAnalyser() {
+    return {
+      fftSize: 32,
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+      getFloatTimeDomainData: (samples: Float32Array) => {
+        samples.fill(0);
+        samples[0] = this.tapPeak;
+      },
+    };
+  }
 
   constructor() {
     super();
@@ -250,9 +279,7 @@ describe('PianoAudioEngine loading', () => {
 describe('PianoAudioEngine playback', () => {
   it('selects playback mode before constructing the AudioContext', async () => {
     const events: string[] = [];
-    const audioSession = {
-      set type(value: string) { events.push(`session:${value}`); },
-    };
+    const audioSession = fakeAudioSession('auto', events);
     class OrderedAudioContext extends FakeAudioContext {
       constructor() {
         super();
@@ -277,6 +304,7 @@ describe('PianoAudioEngine playback', () => {
 
   it('initializes when assigning playback mode throws', async () => {
     const audioSession = {
+      get type() { return 'auto'; },
       set type(_value: string) { throw new Error('unsupported session type'); },
     };
     vi.stubGlobal('navigator', { audioSession });
@@ -529,9 +557,7 @@ describe('PianoAudioEngine playback', () => {
 
   it('resumes a suspended context from a gesture', async () => {
     const events: string[] = [];
-    const audioSession = {
-      set type(value: string) { events.push(`session:${value}`); },
-    };
+    const audioSession = fakeAudioSession('auto', events);
     class OrderedAudioContext extends FakeAudioContext {
       async resume() {
         events.push('resume');
@@ -545,7 +571,42 @@ describe('PianoAudioEngine playback', () => {
     engine.ensureRunning();
     // Wait for the resume promise to settle.
     await vi.waitFor(() => expect(engine.ctx?.state).toBe('running'));
-    expect(events).toEqual(['session:playback', 'session:playback', 'resume']);
+    // Claimed once, at creation; the gesture and the resume find it already held.
+    expect(events).toEqual(['session:playback', 'resume']);
+  });
+
+  it('reclaims the playback session when a gesture finds a running context', async () => {
+    const audioSession = fakeAudioSession();
+    vi.stubGlobal('navigator', { audioSession });
+    vi.stubGlobal('window', { AudioContext: FakeAudioContext });
+    const engine = new PianoAudioEngine();
+    await engine.init();
+    (engine.ctx as unknown as FakeAudioContext).state = 'running';
+    // An interrupting app takes the session and iOS never hands it back. The
+    // context still says 'running', so nothing else on this path would notice.
+    audioSession.type = 'auto';
+    audioSession.events.length = 0;
+
+    engine.ensureRunning();
+
+    expect(audioSession.type).toBe('playback');
+    expect(audioSession.events).toEqual(['session:playback']);
+  });
+
+  it('reclaims the playback session on returning to the foreground', async () => {
+    const audioSession = fakeAudioSession();
+    vi.stubGlobal('navigator', { audioSession });
+    vi.stubGlobal('window', { AudioContext: FakeAudioContext });
+    const engine = new PianoAudioEngine();
+    await engine.init();
+    audioSession.type = 'auto';
+    audioSession.events.length = 0;
+
+    // Still suspended, so the clock probe declines — the session is reclaimed
+    // regardless, because that needs no gesture and no running context.
+    await expect(engine.verifyRunning()).resolves.toBe(false);
+
+    expect(audioSession.events).toEqual(['session:playback']);
   });
 
   it('fades and stops a released voice before cleaning up on ended', () => {
@@ -798,5 +859,76 @@ describe('PianoAudioEngine playback', () => {
     ctx.state = 'interrupted' as AudioContextState;
     (engine as unknown as { _handleStateChange(): void })._handleStateChange();
     expect(engine.state).toBe('awaitingGesture');
+  });
+});
+
+describe('PianoAudioEngine output tap', () => {
+  /** One press, then far enough past the probe delay for the reading to land. */
+  function playAndProbe(engine: PianoAudioEngine, keyId: string) {
+    engine.noteOn(keyId, 60);
+    vi.advanceTimersByTime(500);
+  }
+
+  it('measures the peak the graph is really rendering', async () => {
+    vi.useFakeTimers();
+    const { engine, first } = await stalledEngine();
+    first.tapPeak = 0.42;
+
+    expect(engine.measureOutputPeak()).toBeCloseTo(0.42);
+    expect(engine.describeOutput().outputTap).toBe('unproven');
+
+    playAndProbe(engine, 'D4');
+    const measured = engine.describeOutput();
+    expect(measured.outputTap).toBe('proven');
+    // Read back through a Float32 buffer, so exact equality is not on offer.
+    expect(measured.outputPeak).toBeCloseTo(0.42);
+  });
+
+  it('replaces a context that keeps rendering silence once the tap has proved itself', async () => {
+    vi.useFakeTimers();
+    const { engine, first } = await stalledEngine();
+    // The tap sees sound, so a later zero is a claim about the audio and not
+    // about a browser that never renders the tap.
+    first.tapPeak = 0.5;
+    playAndProbe(engine, 'D4');
+
+    first.tapPeak = 0;
+    for (const keyId of ['E4', 'F4', 'G4']) playAndProbe(engine, keyId);
+
+    expect(StallableAudioContext.instances).toHaveLength(2);
+    expect(engine.ctx).toBe(StallableAudioContext.instances[1] as unknown as AudioContext);
+    expect(first.close).toHaveBeenCalledOnce();
+  });
+
+  it('leaves a context alone while the tap still reads signal', async () => {
+    vi.useFakeTimers();
+    const { engine, first } = await stalledEngine();
+    first.tapPeak = 0.3;
+
+    for (const keyId of ['D4', 'E4', 'F4', 'G4']) playAndProbe(engine, keyId);
+
+    expect(StallableAudioContext.instances).toHaveLength(1);
+    expect(first.close).not.toHaveBeenCalled();
+  });
+
+  it('never accuses a context on readings from a tap that has never seen sound', async () => {
+    vi.useFakeTimers();
+    const { engine, first } = await stalledEngine();
+    // A browser that does not render a side-tapped analyser reads zero forever.
+    first.tapPeak = 0;
+
+    for (const keyId of ['D4', 'E4', 'F4', 'G4', 'A4']) playAndProbe(engine, keyId);
+
+    expect(StallableAudioContext.instances).toHaveLength(1);
+    expect(first.close).not.toHaveBeenCalled();
+    expect(engine.describeOutput()).toMatchObject({ outputTap: 'unproven', silentReadings: 0 });
+  });
+
+  it('reports the tap as unavailable when the analyser node is missing', () => {
+    const { engine } = readyEngine();
+
+    expect(engine.outputTap).toBeNull();
+    expect(engine.measureOutputPeak()).toBeNull();
+    expect(engine.describeOutput().outputTap).toBe('unavailable');
   });
 });
