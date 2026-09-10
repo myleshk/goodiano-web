@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { PianoAudioEngine } from '../../js/app/audio';
+import { describeAudioSession, PianoAudioEngine } from '../../js/app/audio';
 import type { SampleZone } from '../../js/app/audio';
 import { YAMAHA_U1_ZONES } from '../../js/app/sample-zones';
 
@@ -575,22 +575,69 @@ describe('PianoAudioEngine playback', () => {
     expect(events).toEqual(['session:playback', 'resume']);
   });
 
-  it('reclaims the playback session when a gesture finds a running context', async () => {
+  it('reclaims the playback session again on the first gesture after a return', async () => {
     const audioSession = fakeAudioSession();
     vi.stubGlobal('navigator', { audioSession });
     vi.stubGlobal('window', { AudioContext: FakeAudioContext });
     const engine = new PianoAudioEngine();
     await engine.init();
     (engine.ctx as unknown as FakeAudioContext).state = 'running';
-    // An interrupting app takes the session and iOS never hands it back. The
-    // context still says 'running', so nothing else on this path would notice.
-    audioSession.type = 'auto';
+
+    // The return reclaims the session, and cannot know whether that landed: iOS
+    // restores the page well before it restores audio. The tap that follows is
+    // the moment the player is asking for sound, so it reclaims again.
+    await engine.verifyRunning();
     audioSession.events.length = 0;
 
     engine.ensureRunning();
 
     expect(audioSession.type).toBe('playback');
-    expect(audioSession.events).toEqual(['session:playback']);
+    expect(audioSession.events).toEqual(['session:auto', 'session:playback']);
+  });
+
+  it('leaves the session alone on gestures that do not follow a return', async () => {
+    const audioSession = fakeAudioSession();
+    vi.stubGlobal('navigator', { audioSession });
+    vi.stubGlobal('window', { AudioContext: FakeAudioContext });
+    const engine = new PianoAudioEngine();
+    await engine.init();
+    (engine.ctx as unknown as FakeAudioContext).state = 'running';
+    // The state every ordinary tap arrives in. Re-applying the session here
+    // would be churn on every note the player plays.
+    audioSession.events.length = 0;
+
+    engine.ensureRunning();
+    engine.ensureRunning();
+
+    expect(audioSession.events).toEqual([]);
+  });
+
+  it('re-applies the session on a return even though its type still reads playback', async () => {
+    const audioSession = fakeAudioSession();
+    vi.stubGlobal('navigator', { audioSession });
+    vi.stubGlobal('window', { AudioContext: FakeAudioContext });
+    const engine = new PianoAudioEngine();
+    await engine.init();
+    // iOS takes the session without reverting the property, so the type reads
+    // back exactly as we set it while the output goes nowhere. Writing the
+    // value already held is a no-op, so the reclaim has to pass through
+    // another type to make the browser apply the category a second time.
+    expect(audioSession.type).toBe('playback');
+    audioSession.events.length = 0;
+
+    await engine.verifyRunning();
+
+    expect(audioSession.events).toEqual(['session:auto', 'session:playback']);
+    expect(audioSession.type).toBe('playback');
+  });
+
+  it('records an audio session state the build does not expose', () => {
+    vi.stubGlobal('navigator', { audioSession: { get type() { return 'playback'; } } });
+
+    expect(describeAudioSession()).toEqual({
+      audioSessionType: 'playback',
+      audioSessionState: 'unavailable',
+    });
   });
 
   it('reclaims the playback session on returning to the foreground', async () => {

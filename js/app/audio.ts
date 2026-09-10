@@ -124,7 +124,13 @@ export function describeAudioSession(): DiagnosticData {
   const session = audioSession();
   if (!session) return {};
   try {
-    return { audioSessionType: session.type, audioSessionState: session.state };
+    return {
+      audioSessionType: session.type,
+      // Absent from builds that predate the attribute, which is worth saying
+      // out loud: it is the one field that would name an interruption
+      // directly, and a log that simply omits it reads like a log that lost it.
+      audioSessionState: session.state ?? 'unavailable',
+    };
   } catch (_) {
     return { audioSessionType: 'unreadable' };
   }
@@ -136,20 +142,35 @@ export function describeAudioSession(): DiagnosticData {
  * hand it back, which leaves a context that still runs, still renders, and is
  * routed nowhere — so every path that could be a return from an interruption
  * re-asserts it, and the reason it was re-asserted is what the log records.
+ *
+ * `reclaim` is what those return paths ask for. Writing the type we already
+ * hold does nothing: the setter only records a category override, and iOS
+ * leaves that override in place while it routes us nowhere, so a session that
+ * still reads 'playback' is not evidence of anything. Passing through 'auto'
+ * first is what makes the browser recompute the category from the live media
+ * session and apply it again — the step that can actually re-activate — and
+ * the 'playback' write straight after puts the page back where it belongs.
  */
-function configurePlaybackAudioSession(reason: string): void {
+function configurePlaybackAudioSession(reason: string, reclaim = false): void {
   const session = audioSession();
   if (!session) return;
   try {
     const before = session.type;
-    if (before === 'playback') return;
+    if (before === 'playback' && !reclaim) return;
+    // A session already holding the type is re-applied rather than claimed,
+    // and the two are worth telling apart in the log: 'playback' before and
+    // after is the state a silent return hides in.
+    const readded = before === 'playback';
+    if (readded) session.type = 'auto';
     session.type = 'playback';
-    diagnostics.record('audio', 'audio session claimed for playback', {
-      reason,
-      before,
-      after: session.type,
-      state: session.state,
-    });
+    diagnostics.record('audio',
+      readded ? 'audio session reclaimed for playback' : 'audio session claimed for playback',
+      {
+        reason,
+        before,
+        after: session.type,
+        state: session.state,
+      });
   } catch (error) {
     // The experimental API may reject assignment. Web Audio should continue to
     // work on the browser's default session type, quieter than we asked for.
@@ -206,6 +227,14 @@ class PianoAudioEngine {
   private _restorePending = false;
   /** A stalled context was found mid-load and still needs replacing. */
   private _rebuildDeferred = false;
+  /**
+   * The page has been away, and the session iOS gives back may not be the one
+   * it took. A running context looks identical whether or not the session
+   * behind it survived — that is the whole shape of a silent return — so the
+   * only honest trigger is having been away, and it is cleared by the gesture
+   * that answers it. Ordinary taps then cost nothing.
+   */
+  private _sessionStale = false;
   /** Scratch buffer for the output tap, sized once per context. */
   private _outputSamples: Float32Array<ArrayBuffer> | null = null;
   private _outputProbeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -550,7 +579,10 @@ class PianoAudioEngine {
     // Before the state check, not after: the branch a silent return takes is
     // the one where the context still claims to be running, and that branch
     // used to return without ever reclaiming the session iOS had taken away.
-    configurePlaybackAudioSession('gesture');
+    if (this._sessionStale) {
+      this._sessionStale = false;
+      configurePlaybackAudioSession('gesture', true);
+    }
     const ctx = this.ctx;
     if (!ctx || ctx.state === 'closed') {
       diagnostics.record('audio', 'gesture found no usable context', { contextState: ctx?.state ?? 'none' });
@@ -633,8 +665,12 @@ class PianoAudioEngine {
    */
   async verifyRunning(): Promise<boolean> {
     // A foreground return is the moment the session is most likely to have been
-    // handed to something else, and reclaiming it needs no gesture.
-    configurePlaybackAudioSession('foreground');
+    // handed to something else, and reclaiming it needs no gesture. The flag
+    // stays set afterwards: iOS restores the page well before it restores
+    // audio, so a reclaim made here can land on an audio unit that is not
+    // listening yet, and the next tap reclaims again rather than trusting it.
+    this._sessionStale = true;
+    configurePlaybackAudioSession('foreground', true);
     const ctx = this.ctx;
     if (!ctx || ctx.state !== 'running' || typeof ctx.currentTime !== 'number') {
       diagnostics.record('audio', 'skipped the stall probe', {
