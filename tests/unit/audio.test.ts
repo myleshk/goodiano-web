@@ -575,17 +575,20 @@ describe('PianoAudioEngine playback', () => {
     expect(events).toEqual(['session:playback', 'resume']);
   });
 
-  it('reclaims the playback session again on the first gesture after a return', async () => {
+  it('replaces the context the page came back to instead of trusting it', async () => {
     const audioSession = fakeAudioSession();
     vi.stubGlobal('navigator', { audioSession });
     vi.stubGlobal('window', { AudioContext: FakeAudioContext });
     const engine = new PianoAudioEngine();
     await engine.init();
-    (engine.ctx as unknown as FakeAudioContext).state = 'running';
+    const returned = engine.ctx as unknown as FakeAudioContext;
+    returned.state = 'running';
 
     // The return reclaims the session, and cannot know whether that landed: iOS
-    // restores the page well before it restores audio. The tap that follows is
-    // the moment the player is asking for sound, so it reclaims again.
+    // restores the page well before it restores audio. Reclaiming is also all
+    // the page can do from above the audio unit, so a context that comes back
+    // still claiming to run — the shape a silent return hides in — is replaced
+    // by the gesture that follows, not trusted.
     await engine.verifyRunning();
     audioSession.events.length = 0;
 
@@ -593,6 +596,41 @@ describe('PianoAudioEngine playback', () => {
 
     expect(audioSession.type).toBe('playback');
     expect(audioSession.events).toEqual(['session:auto', 'session:playback']);
+    expect(engine.ctx).not.toBe(returned);
+  });
+
+  it('resumes a context that came back suspended rather than replacing it', async () => {
+    vi.stubGlobal('navigator', { audioSession: fakeAudioSession() });
+    vi.stubGlobal('window', { AudioContext: FakeAudioContext });
+    const engine = new PianoAudioEngine();
+    await engine.init();
+    const returned = engine.ctx as unknown as FakeAudioContext;
+
+    // A suspended context admitted to stopping, which is the ordinary way back:
+    // resuming it is the cure, and it keeps the graph the page already built.
+    await engine.verifyRunning();
+    engine.ensureRunning();
+    await vi.waitFor(() => expect(returned.state).toBe('running'));
+
+    expect(engine.ctx).toBe(returned);
+  });
+
+  it('replaces the context once per return, not once per gesture', async () => {
+    vi.stubGlobal('navigator', { audioSession: fakeAudioSession() });
+    vi.stubGlobal('window', { AudioContext: FakeAudioContext });
+    const engine = new PianoAudioEngine();
+    await engine.init();
+    (engine.ctx as unknown as FakeAudioContext).state = 'running';
+    await engine.verifyRunning();
+
+    engine.ensureRunning();
+    const replacement = engine.ctx;
+
+    engine.ensureRunning();
+
+    // The replacement is new audio, not a context the page came back to, and
+    // rebuilding it on every tap would churn the audio unit for nothing.
+    expect(engine.ctx).toBe(replacement);
   });
 
   it('leaves the session alone on gestures that do not follow a return', async () => {
