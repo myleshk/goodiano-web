@@ -228,11 +228,11 @@ class PianoAudioEngine {
   /** A stalled context was found mid-load and still needs replacing. */
   private _rebuildDeferred = false;
   /**
-   * The page has been away, and the session iOS gives back may not be the one
-   * it took. A running context looks identical whether or not the session
-   * behind it survived — that is the whole shape of a silent return — so the
-   * only honest trigger is having been away, and it is cleared by the gesture
-   * that answers it. Ordinary taps then cost nothing.
+   * The page has been away, and the audio iOS gives back may not be the audio
+   * it took. A context that survived the trip looks identical to a working one
+   * — that is the whole shape of a silent return — so the only honest trigger
+   * is having been away, and it is cleared by the gesture that answers it.
+   * Ordinary taps then cost nothing.
    */
   private _sessionStale = false;
   /** Scratch buffer for the output tap, sized once per context. */
@@ -533,6 +533,10 @@ class PianoAudioEngine {
   private _rebuildContext(): boolean {
     const stale = this.ctx;
     if (!stale) return false;
+    // Whatever the page came back to, it is not this context any more. The
+    // replacement is new enough to be resumed by the next gesture rather than
+    // replaced a second time.
+    this._sessionStale = false;
     // decodeAudioData belongs to the context that started it, so replacing the
     // context mid-load would throw the download away. Wait for the load to
     // finish and rebuild then — nothing is audible until it does anyway.
@@ -582,6 +586,24 @@ class PianoAudioEngine {
     if (this._sessionStale) {
       this._sessionStale = false;
       configurePlaybackAudioSession('gesture', true);
+      const returned = this.ctx;
+      // A return is the one silence nothing else here can see: the context
+      // comes back 'running', with its clock advancing and its output tap
+      // reading a full-scale mix, because the graph really is rendering. What
+      // iOS leaves behind is the output past that tap, so the session reclaim
+      // above — the only lever on that side of it — is not always enough, and
+      // the context, the one handle this page has on the audio unit, is
+      // replaced instead. A context that came back suspended needs none of
+      // this: it said so, and resuming it below is the ordinary cure.
+      if (returned && returned.state === 'running') {
+        diagnostics.record('audio', 'replacing the context the page came back to', {
+          currentTime: returned.currentTime,
+          loaded: this.loaded,
+          ...describeAudioSession(),
+        });
+        this._rebuildContext();
+        return;
+      }
     }
     const ctx = this.ctx;
     if (!ctx || ctx.state === 'closed') {
