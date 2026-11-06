@@ -604,7 +604,7 @@ describe('PianoAudioEngine playback', () => {
     expect(events).toEqual(['session:playback', 'resume']);
   });
 
-  it('replaces the context the page came back to instead of trusting it', async () => {
+  it('replaces a returned context it has no clock to judge', async () => {
     const audioSession = fakeAudioSession();
     vi.stubGlobal('navigator', { audioSession });
     vi.stubGlobal('window', { AudioContext: FakeAudioContext });
@@ -616,8 +616,8 @@ describe('PianoAudioEngine playback', () => {
     // The return reclaims the session, and cannot know whether that landed: iOS
     // restores the page well before it restores audio. Reclaiming is also all
     // the page can do from above the audio unit, so a context that comes back
-    // still claiming to run — the shape a silent return hides in — is replaced
-    // by the gesture that follows, not trusted.
+    // still claiming to run with no clock to judge it by — the shape a silent
+    // return hides in — is replaced by the gesture that follows, not trusted.
     await engine.verifyRunning();
     audioSession.events.length = 0;
 
@@ -626,6 +626,55 @@ describe('PianoAudioEngine playback', () => {
     expect(audioSession.type).toBe('playback');
     expect(audioSession.events).toEqual(['session:auto', 'session:playback']);
     expect(engine.ctx).not.toBe(returned);
+  });
+
+  it('trusts a returned context whose clock kept up while the page was away', async () => {
+    vi.useFakeTimers();
+    const { engine, first } = await stalledEngine();
+
+    // Back from a minute away with the audio unit alive throughout: the clock
+    // ran at wall rate while the page was gone, and the return has nothing to
+    // repair. The probe reads it a moment late, as it always does.
+    const verified = engine.verifyRunning();
+    await vi.advanceTimersByTimeAsync(100);
+    first.currentTime = 60;
+    await vi.advanceTimersByTimeAsync(200);
+    await expect(verified).resolves.toBe(false);
+
+    // A second absence, also rendered end to end.
+    vi.advanceTimersByTime(120_000);
+    first.currentTime = 180;
+    engine.ensureRunning();
+
+    // Replacing this one would only cost the first notes after the return, and
+    // a piano makes its sound on the first note.
+    expect(engine.ctx).toBe(first as unknown as AudioContext);
+    expect(first.close).not.toHaveBeenCalled();
+    expect(engine.state).toBe('ready');
+  });
+
+  it('replaces a returned context whose clock fell behind while the page was away', async () => {
+    vi.useFakeTimers();
+    const { engine, first } = await stalledEngine();
+
+    // The log this rule comes from: 150 s backgrounded, half a second of clock,
+    // and a context that came back claiming to run. The probe cannot see the
+    // half second because it starts after it, which is exactly how the gesture
+    // arrived first on the phone.
+    vi.advanceTimersByTime(150_000);
+    first.currentTime = 0.5;
+    const verified = engine.verifyRunning();
+    await vi.advanceTimersByTimeAsync(250);
+
+    // The gesture that answers the return. Half a second of clock across
+    // two and a half minutes away is not a context that survived the trip.
+    engine.ensureRunning();
+    await vi.advanceTimersByTimeAsync(250);
+    await expect(verified).resolves.toBe(false);
+
+    expect(StallableAudioContext.instances).toHaveLength(2);
+    expect(engine.ctx).toBe(StallableAudioContext.instances[1] as unknown as AudioContext);
+    expect(first.close).toHaveBeenCalledOnce();
   });
 
   it('resumes a context that came back suspended rather than replacing it', async () => {

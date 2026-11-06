@@ -49,6 +49,12 @@ const STALL_PROBE_ATTEMPTS = 3;
 // A gesture can only prove a stall once enough wall-clock time has passed for a
 // healthy clock to have visibly moved since the last reading.
 const STALL_GESTURE_MIN_ELAPSED_MS = 250;
+// A context that kept rendering while the page was away advances its clock at
+// the wall clock's rate; one that came back with its audio unit gone barely
+// moves at all. The log behind this rule shows 0.5 s of clock across 150 s
+// backgrounded against 433 s across 433 s on a healthy trip, so half sits
+// comfortably between the two and neither side is near the line.
+const CLOCK_ADVANCE_RATIO_FLOOR = 0.5;
 // The other way a context goes quiet is subtler than a stopped clock: the clock
 // keeps moving, the graph keeps rendering, and the output goes nowhere because
 // iOS took the audio session away and never gave it back. Nothing in the Web
@@ -698,6 +704,25 @@ class PianoAudioEngine {
   }
 
   /**
+   * Whether the clock kept time while the page was away, so a context that came
+   * back can be trusted with the next note. Null when there is nothing to judge
+   * it by — no previous reading, or too little wall time since one — which is
+   * not the same answer as false and is treated as the old doubt.
+   *
+   * A context whose audio unit iOS tore down stops dead; one that was only
+   * suspended advances a hair and stops. Both fall under the floor. A context
+   * that kept rendering runs at the wall clock's rate, whatever the app was
+   * doing at the time.
+   */
+  private _clockKeptUp(ctx: AudioContext): boolean | null {
+    const previous = this._clockAudioTime;
+    if (previous === null || typeof ctx.currentTime !== 'number') return null;
+    const elapsed = nowMs() - this._clockWallTime;
+    if (elapsed < STALL_GESTURE_MIN_ELAPSED_MS) return null;
+    return ctx.currentTime - previous >= (elapsed / 1000) * CLOCK_ADVANCE_RATIO_FLOOR;
+  }
+
+  /**
    * Replace a context whose audio unit iOS has torn down. The decoded sample
    * survives — an AudioBuffer is not bound to the context that decoded it — so
    * this costs a new output chain and nothing else: no refetch, no redecode.
@@ -769,13 +794,34 @@ class PianoAudioEngine {
       // comes back 'running', with its clock advancing and its output tap
       // reading a full-scale mix, because the graph really is rendering. What
       // iOS leaves behind is the output past that tap, so the session reclaim
-      // above — the only lever on that side of it — is not always enough, and
-      // the context, the one handle this page has on the audio unit, is
-      // replaced instead. A context that came back suspended needs none of
-      // this: it said so, and resuming it below is the ordinary cure.
+      // above — with the media element beside it — is the lever on that side,
+      // and the context, the one handle this page has on the audio unit, is
+      // replaced when the clock says the unit did not survive the trip.
       if (returned && returned.state === 'running') {
+        const sinceLastSeenMs = Math.round(nowMs() - this._clockWallTime);
+        const advancedMs = this._clockAudioTime === null
+          ? null
+          : Math.round((returned.currentTime - this._clockAudioTime) * 1000);
+        // Replacing costs the first notes after every return — keys pressed
+        // while the replacement resumes are queued, and a tap is short — so it
+        // is worth asking whether this context is actually one of the broken
+        // ones. A clock that ran at wall rate through the whole absence is not.
+        if (this._clockKeptUp(returned) === true) {
+          diagnostics.record('audio', 'trusting the context the page came back to', {
+            currentTime: returned.currentTime,
+            advancedMs,
+            sinceLastSeenMs,
+            loaded: this.loaded,
+            ...describeAudioSession(),
+          });
+          this.state = this.loaded ? 'ready' : 'loading';
+          this._observeClock();
+          return;
+        }
         diagnostics.record('audio', 'replacing the context the page came back to', {
           currentTime: returned.currentTime,
+          advancedMs,
+          sinceLastSeenMs,
           loaded: this.loaded,
           ...describeAudioSession(),
         });
