@@ -47,8 +47,20 @@ function captureExport() {
   return { blobs, downloads, click };
 }
 
-function stubShare(share: () => Promise<void>): ReturnType<typeof vi.fn> {
-  const shareMock = vi.fn(share);
+/**
+ * The report is not the only object URL the page makes: waking the audio
+ * engine asks iOS for the session with a silent media element, and that is a
+ * blob too. Pick ours by what it says rather than by when it was made.
+ */
+async function reportAmong(blobs: Blob[]): Promise<string> {
+  for (const blob of blobs) {
+    const text = await blob.text();
+    if (text.startsWith('Goodiano diagnostics log')) return text;
+  }
+  throw new Error('no diagnostics report among the exported blobs');
+}
+
+function stubShare(share: () => Promise<void>): ReturnType<typeof vi.fn> {  const shareMock = vi.fn(share);
   Object.defineProperty(navigator, 'share', { value: shareMock, configurable: true, writable: true });
   Object.defineProperty(navigator, 'canShare', { value: () => true, configurable: true, writable: true });
   return shareMock;
@@ -143,7 +155,7 @@ describe('lifecycle recording', () => {
     document.querySelector<HTMLButtonElement>('.log-export-button')!.click();
     await vi.waitFor(() => expect(click).toHaveBeenCalled());
 
-    const report = await blobs[0].text();
+    const report = await reportAmong(blobs);
     expect(report).toContain('network offline');
     expect(report).toContain('network online');
     expect(report).toContain('pageshow  {"persisted":true');

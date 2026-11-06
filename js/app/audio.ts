@@ -55,6 +55,10 @@ const STALL_GESTURE_MIN_ELAPSED_MS = 250;
 // backgrounded against 433 s across 433 s on a healthy trip, so half sits
 // comfortably between the two and neither side is near the line.
 const CLOCK_ADVANCE_RATIO_FLOOR = 0.5;
+// How late a key struck before the engine could play it may still sound. Beyond
+// this the press is forgotten and a note arriving now is a ghost rather than the
+// one the player is waiting for.
+const QUEUED_RELEASE_GRACE_MS = 1_000;
 // The other way a context goes quiet is subtler than a stopped clock: the clock
 // keeps moving, the graph keeps rendering, and the output goes nowhere because
 // iOS took the audio session away and never gave it back. Nothing in the Web
@@ -271,6 +275,13 @@ class PianoAudioEngine {
   activeNotes = new Map<string, ActiveNote>();
   queuedNotes = new Map<string, NoteRequest>();
   heldNotes = new Map<string, NoteRequest>();
+  /**
+   * Keys let go of before the engine could strike them, and when. They stay
+   * queued: a press that arrives while the engine is waking is still a press,
+   * and the strike it asked for is owed to the player rather than cancelled by
+   * the finger lifting a moment too early.
+   */
+  private _releasedWhileQueued = new Map<string, number>();
   /** Notes the player has let go of that the pedal is holding open. */
   sustainedNotes = new Map<string, ActiveNote>();
   sustainEnabled = false;
@@ -1129,6 +1140,7 @@ class PianoAudioEngine {
     const note = { keyId, midiNote, velocity };
     this.heldNotes.set(keyId, note);
     this.queuedNotes.set(keyId, note);
+    this._releasedWhileQueued.delete(keyId);
     if (!this.ctx || !this.sampleBuffer || this.ctx.state !== 'running') {
       // The one symptom a player reports as "no sound": keys arriving at an
       // engine that cannot play them. Which of the three is missing says why.
@@ -1206,7 +1218,25 @@ class PianoAudioEngine {
     if (this.queuedNotes.size > 0) {
       diagnostics.record('audio', 'flushing queued notes', { queued: this.queuedNotes.size });
     }
-    for (const note of this.queuedNotes.values()) this._startNote(note);
+    const now = nowMs();
+    // oxlint-disable-next-line no-useless-spread -- _startNote deletes from this.queuedNotes while iterating.
+    for (const note of [...this.queuedNotes.values()]) {
+      const releasedAt = this._releasedWhileQueued.get(note.keyId);
+      if (releasedAt !== undefined) {
+        this._releasedWhileQueued.delete(note.keyId);
+        // The engine took too long. A note arriving now is not the one the
+        // player asked for, so it is dropped rather than played late.
+        if (now - releasedAt > QUEUED_RELEASE_GRACE_MS) {
+          this.queuedNotes.delete(note.keyId);
+          continue;
+        }
+      }
+      this._startNote(note);
+      // The finger is already gone: strike it, then let the damper fall on it.
+      // Short and quiet is still the press being answered; nothing at all is
+      // the app losing it.
+      if (releasedAt !== undefined) this.noteOff(note.keyId);
+    }
   }
 
   /**
@@ -1270,10 +1300,21 @@ class PianoAudioEngine {
 
   noteOff(keyId: string): void {
     this.heldNotes.delete(keyId);
-    this.queuedNotes.delete(keyId);
     const note = this.activeNotes.get(keyId);
     this.activeNotes.delete(keyId);
-    if (!note || !this.ctx) return;
+    if (!note) {
+      // No voice to release: either the press never became one because the
+      // engine could not play it, or its voice has already ended. A queued
+      // note is kept, and the moment the finger left with it — the strike is
+      // still owed, and dropping it here is how a tap on a waking engine ends
+      // up as silence.
+      if (this.queuedNotes.has(keyId)) this._releasedWhileQueued.set(keyId, nowMs());
+      else this.queuedNotes.delete(keyId);
+      return;
+    }
+    this.queuedNotes.delete(keyId);
+    this._releasedWhileQueued.delete(keyId);
+    if (!this.ctx) return;
     if (this.sustainEnabled) {
       // The damper stays off the string: keep it sounding until the pedal
       // lifts. A key struck twice under the pedal retires its earlier voice
@@ -1331,6 +1372,7 @@ class PianoAudioEngine {
   allNotesOff(): void {
     this.heldNotes.clear();
     this.queuedNotes.clear();
+    this._releasedWhileQueued.clear();
     this.sustainedNotes.clear();
     // oxlint-disable-next-line no-useless-spread -- _stopVoice deletes from this.voices while iterating.
     for (const note of [...this.voices]) this._stopVoice(note);

@@ -571,17 +571,56 @@ describe('PianoAudioEngine playback', () => {
     expect(engine.sustainedNotes.has('k5')).toBe(false);
   });
 
-  it('queues only held notes while loading and clears them safely', () => {
+  it('keeps a key struck before the engine could play it, released or not', () => {
     const engine = new PianoAudioEngine();
     engine.noteOn('C4', 60, 127);
     engine.noteOn('E4', 64, 64);
     engine.noteOff('C4');
 
-    expect([...engine.queuedNotes.keys()]).toEqual(['E4']);
+    // C4 keeps its place in the queue. The finger is gone, but the strike has
+    // not happened yet, and cancelling it here is what turns a tap on a waking
+    // engine into nothing at all.
+    expect([...engine.queuedNotes.keys()]).toEqual(['C4', 'E4']);
     expect([...engine.heldNotes.keys()]).toEqual(['E4']);
     engine.allNotesOff();
     expect(engine.queuedNotes.size).toBe(0);
     expect(engine.heldNotes.size).toBe(0);
+  });
+
+  it('strikes the key that woke the engine even though the finger has gone', () => {
+    const { engine, createdSources } = readyEngine();
+    const ctx = engine.ctx as unknown as { state: string };
+    ctx.state = 'suspended';
+    engine.noteOn('C4', 60);
+    engine.noteOff('C4');
+    expect(engine.queuedNotes.size).toBe(1);
+
+    ctx.state = 'running';
+    engine._flushQueuedNotes();
+
+    // Struck and released in one go: short, but it is the press being answered.
+    expect(createdSources).toHaveLength(1);
+    expect(createdSources[0].start).toHaveBeenCalledOnce();
+    expect(createdSources[0].stop).toHaveBeenCalled();
+    expect(engine.queuedNotes.size).toBe(0);
+  });
+
+  it('drops a strike the engine took too long to reach', () => {
+    vi.useFakeTimers();
+    const { engine, createdSources } = readyEngine();
+    const ctx = engine.ctx as unknown as { state: string };
+    ctx.state = 'suspended';
+    engine.noteOn('C4', 60);
+    engine.noteOff('C4');
+
+    vi.advanceTimersByTime(2_000);
+    ctx.state = 'running';
+    engine._flushQueuedNotes();
+
+    // Late enough that the player has forgotten the press: playing it now
+    // would be a note nobody asked for, at a moment they did not choose.
+    expect(createdSources).toHaveLength(0);
+    expect(engine.queuedNotes.size).toBe(0);
   });
 
   it('resumes a suspended context from a gesture', async () => {
