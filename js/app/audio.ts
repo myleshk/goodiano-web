@@ -49,11 +49,30 @@ const STALL_PROBE_ATTEMPTS = 3;
 // A gesture can only prove a stall once enough wall-clock time has passed for a
 // healthy clock to have visibly moved since the last reading.
 const STALL_GESTURE_MIN_ELAPSED_MS = 250;
+// A context that kept rendering while the page was away advances its clock at
+// the wall clock's rate; one that came back with its audio unit gone barely
+// moves at all. The log behind this rule shows 0.5 s of clock across 150 s
+// backgrounded against 433 s across 433 s on a healthy trip, so half sits
+// comfortably between the two and neither side is near the line.
+const CLOCK_ADVANCE_RATIO_FLOOR = 0.5;
+// How late a key struck before the engine could play it may still sound. Beyond
+// this the press is forgotten and a note arriving now is a ghost rather than the
+// one the player is waiting for.
+const QUEUED_RELEASE_GRACE_MS = 1_000;
 // The other way a context goes quiet is subtler than a stopped clock: the clock
 // keeps moving, the graph keeps rendering, and the output goes nowhere because
 // iOS took the audio session away and never gave it back. Nothing in the Web
 // Audio API reports that, so the output is tapped and measured instead.
 const OUTPUT_TAP_FFT_SIZE = 2048;
+// iOS hands the session back to a page whose media element is asking for it on
+// the way in, and not reliably to one whose only claim is an AudioContext. The
+// element plays true silence in a loop, so it is held only long enough to cover
+// the resume, the new context, and the first notes, then stood down instead of
+// running for the life of the page.
+const SESSION_MEDIA_HOLD_MS = 2_000;
+// One reading of the element's own clock, taken well after play(): a media
+// clock that never moves either means the page has no audio at all.
+const SESSION_MEDIA_PROBE_MS = 300;
 // A note that is really sounding is orders of magnitude above this a moment
 // after it starts. Only true digital silence reads below it.
 const SILENT_OUTPUT_PEAK = 1e-4;
@@ -196,6 +215,53 @@ function describeRoute(ctx: AudioContext): DiagnosticData {
   };
 }
 
+/**
+ * A silent WAV, built rather than shipped. It exists to give the page a media
+ * element that can ask iOS for the audio session, and every frame stays at
+ * zero: the element is there to hold the session open, not to be heard. Built
+ * once and reused, because a new blob URL per return would leak one per
+ * background trip.
+ */
+let silentMediaUrl: string | null | undefined;
+
+function silentLoopUrl(): string | null {
+  if (silentMediaUrl !== undefined) return silentMediaUrl;
+  silentMediaUrl = null;
+  try {
+    if (typeof Blob === 'undefined' || typeof URL === 'undefined'
+      || typeof URL.createObjectURL !== 'function') return null;
+    const sampleRate = 8_000;
+    // A quarter second is long enough to loop without a seam and short enough
+    // to keep the blob inside one audio buffer on every device that plays it.
+    const frames = sampleRate / 4;
+    const bytes = new Uint8Array(44 + frames * 2);
+    const view = new DataView(bytes.buffer);
+    const ascii = (offset: number, text: string) => {
+      for (let index = 0; index < text.length; index += 1) {
+        bytes[offset + index] = text.charCodeAt(index);
+      }
+    };
+    ascii(0, 'RIFF');
+    view.setUint32(4, 36 + frames * 2, true);
+    ascii(8, 'WAVE');
+    ascii(12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true); // PCM
+    view.setUint16(22, 1, true); // mono
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * 2, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true);
+    ascii(36, 'data');
+    view.setUint32(40, frames * 2, true);
+    silentMediaUrl = URL.createObjectURL(new Blob([bytes], { type: 'audio/wav' }));
+  } catch (_) {
+    // No blobs, no URL factory: the context paths still work on their own.
+    silentMediaUrl = null;
+  }
+  return silentMediaUrl;
+}
+
 class PianoAudioEngine {
   ctx: AudioContext | null = null;
   masterGain: GainNode | null = null;
@@ -209,6 +275,13 @@ class PianoAudioEngine {
   activeNotes = new Map<string, ActiveNote>();
   queuedNotes = new Map<string, NoteRequest>();
   heldNotes = new Map<string, NoteRequest>();
+  /**
+   * Keys let go of before the engine could strike them, and when. They stay
+   * queued: a press that arrives while the engine is waking is still a press,
+   * and the strike it asked for is owed to the player rather than cancelled by
+   * the finger lifting a moment too early.
+   */
+  private _releasedWhileQueued = new Map<string, number>();
   /** Notes the player has let go of that the pedal is holding open. */
   sustainedNotes = new Map<string, ActiveNote>();
   sustainEnabled = false;
@@ -250,6 +323,16 @@ class PianoAudioEngine {
   /** Peak of the last reading, for the export snapshot. Null once nothing has been measured. */
   private _lastOutputPeak: number | null = null;
   private _lastOutputLevelLog = 0;
+  /**
+   * The silent element that asks iOS for the audio session. Kept for the life
+   * of the page: rebuilding it on every return would cost a decode each time,
+   * and a media element that has already been played once is the one iOS is
+   * most willing to play again.
+   */
+  private _sessionMedia: HTMLAudioElement | null = null;
+  private _sessionMediaTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Last thing the element did, for the export snapshot. */
+  private _sessionMediaState = 'idle';
 
   /** Initialize AudioContext (must be resumed from a user gesture on iOS). */
   async init(): Promise<AudioContext> {
@@ -393,18 +476,125 @@ class PianoAudioEngine {
   }
 
   /**
-   * What the output tap has seen, for the exported report. `outputPeak` is the
-   * last reading rather than a fresh one: a reading taken with nothing sounding
-   * is legitimately zero and would only mislead whoever reads the log.
+   * What the output tap has seen, for the exported report. `lastOutputPeak` is
+   * the last reading rather than a fresh one: a reading taken with nothing
+   * sounding is legitimately zero and would only mislead whoever reads the log.
+   * Naming it for what it is matters more than it looks — the log behind this
+   * field was read as "the output is fine" while the app was silent, because a
+   * peak with no timestamp on it reads as a measurement of now.
    */
   describeOutput(): DiagnosticData {
     const ctx = this.ctx;
     return {
       outputTap: this.outputTap ? (this._outputTapProven ? 'proven' : 'unproven') : 'unavailable',
-      outputPeak: this._lastOutputPeak ?? undefined,
+      lastOutputPeak: this._lastOutputPeak ?? undefined,
       silentReadings: this._silentReadings,
+      sessionMedia: this._sessionMediaState,
       ...(ctx ? describeRoute(ctx) : describeAudioSession()),
     };
+  }
+
+  /**
+   * Ask for the audio session with a media element.
+   *
+   * Everything else on this page asks with an AudioContext, and a context that
+   * iOS has already taken the session from cannot ask again: it reports
+   * 'running', keeps rendering, reads full scale at the output tap, and sends
+   * that mix to a destination nobody is listening to. Nothing above the audio
+   * unit can see the difference — which is why the silent-return log reads like
+   * a healthy app. A media element is the one path WebKit activates the session
+   * for on its own, so it is the only handle this page has left on the audio
+   * unit after a return.
+   *
+   * Call it synchronously from the gesture or page event that is asking. iOS
+   * grants activation to play() calls made there and rejects the ones that
+   * arrive after a task boundary.
+   */
+  private _activateSessionWithMedia(reason: string): void {
+    try {
+      if (typeof Audio === 'undefined') return;
+      let element = this._sessionMedia;
+      if (!element) {
+        const url = silentLoopUrl();
+        if (!url) return;
+        element = new Audio(url);
+        element.loop = true;
+        element.preload = 'auto';
+        element.volume = 1;
+        element.setAttribute('playsinline', '');
+        element.setAttribute('aria-hidden', 'true');
+        // A detached element is allowed to play, but iOS is more willing to
+        // give an attached one the session, and an audio element with no
+        // controls draws nothing either way.
+        if (typeof document !== 'undefined' && document.body) {
+          try {
+            document.body.append(element);
+          } catch (_) {
+            // Not attached; still worth asking.
+          }
+        }
+        this._sessionMedia = element;
+      }
+      // Rewind rather than replay: an element iOS silently paused would
+      // otherwise stay paused, and a paused element proves nothing.
+      element.currentTime = 0;
+      this._sessionMediaState = 'asked';
+      diagnostics.record('audio', 'media element asked for the audio session', {
+        reason,
+        paused: element.paused,
+        readyState: element.readyState,
+        ...describeAudioSession(),
+      });
+      void Promise.resolve(element.play()).then(() => {
+        this._sessionMediaState = 'playing';
+        diagnostics.record('audio', 'media element playing', {
+          reason,
+          paused: element.paused,
+          volume: element.volume,
+        });
+        // A second clock, outside Web Audio. If this one does not move either,
+        // the page has no audio at all — no context, no element, no route —
+        // and a reload is the only cure left, which is worth knowing.
+        setTimeout(() => {
+          if (this._sessionMedia !== element) return;
+          diagnostics.record('audio', 'media element clock', {
+            reason,
+            currentTime: element.currentTime,
+            paused: element.paused,
+            ...describeAudioSession(),
+          });
+        }, SESSION_MEDIA_PROBE_MS);
+        this._standDownSessionMedia();
+      }).catch(error => {
+        this._sessionMediaState = 'refused';
+        diagnostics.record('audio', 'media element refused', { reason, ...describeError(error) });
+      });
+    } catch (error) {
+      this._sessionMediaState = 'unavailable';
+      diagnostics.record('audio', 'media element unavailable', { reason, ...describeError(error) });
+    }
+  }
+
+  /** Stop the silent element once the graph it was holding the session for is live. */
+  private _standDownSessionMedia(): void {
+    if (typeof setTimeout !== 'function') return;
+    if (this._sessionMediaTimer !== null) clearTimeout(this._sessionMediaTimer);
+    this._sessionMediaTimer = setTimeout(() => {
+      this._sessionMediaTimer = null;
+      const element = this._sessionMedia;
+      if (!element) return;
+      this._sessionMediaState = 'stood down';
+      diagnostics.record('audio', 'media element standing down', {
+        currentTime: element.currentTime,
+        paused: element.paused,
+        contextState: this.ctx?.state ?? 'none',
+      });
+      try {
+        element.pause();
+      } catch (_) {
+        // Nothing to stand down.
+      }
+    }, SESSION_MEDIA_HOLD_MS);
   }
 
   /**
@@ -525,6 +715,25 @@ class PianoAudioEngine {
   }
 
   /**
+   * Whether the clock kept time while the page was away, so a context that came
+   * back can be trusted with the next note. Null when there is nothing to judge
+   * it by — no previous reading, or too little wall time since one — which is
+   * not the same answer as false and is treated as the old doubt.
+   *
+   * A context whose audio unit iOS tore down stops dead; one that was only
+   * suspended advances a hair and stops. Both fall under the floor. A context
+   * that kept rendering runs at the wall clock's rate, whatever the app was
+   * doing at the time.
+   */
+  private _clockKeptUp(ctx: AudioContext): boolean | null {
+    const previous = this._clockAudioTime;
+    if (previous === null || typeof ctx.currentTime !== 'number') return null;
+    const elapsed = nowMs() - this._clockWallTime;
+    if (elapsed < STALL_GESTURE_MIN_ELAPSED_MS) return null;
+    return ctx.currentTime - previous >= (elapsed / 1000) * CLOCK_ADVANCE_RATIO_FLOOR;
+  }
+
+  /**
    * Replace a context whose audio unit iOS has torn down. The decoded sample
    * survives — an AudioBuffer is not bound to the context that decoded it — so
    * this costs a new output chain and nothing else: no refetch, no redecode.
@@ -586,18 +795,44 @@ class PianoAudioEngine {
     if (this._sessionStale) {
       this._sessionStale = false;
       configurePlaybackAudioSession('gesture', true);
+      // Inside the gesture, which is the only place iOS honours this: the
+      // context below is built on top of a session that is active again, or on
+      // one that will not be activated at all, and the two are worth telling
+      // apart in the log on the next round trip through the app switcher.
+      this._activateSessionWithMedia('gesture');
       const returned = this.ctx;
       // A return is the one silence nothing else here can see: the context
       // comes back 'running', with its clock advancing and its output tap
       // reading a full-scale mix, because the graph really is rendering. What
       // iOS leaves behind is the output past that tap, so the session reclaim
-      // above — the only lever on that side of it — is not always enough, and
-      // the context, the one handle this page has on the audio unit, is
-      // replaced instead. A context that came back suspended needs none of
-      // this: it said so, and resuming it below is the ordinary cure.
+      // above — with the media element beside it — is the lever on that side,
+      // and the context, the one handle this page has on the audio unit, is
+      // replaced when the clock says the unit did not survive the trip.
       if (returned && returned.state === 'running') {
+        const sinceLastSeenMs = Math.round(nowMs() - this._clockWallTime);
+        const advancedMs = this._clockAudioTime === null
+          ? null
+          : Math.round((returned.currentTime - this._clockAudioTime) * 1000);
+        // Replacing costs the first notes after every return — keys pressed
+        // while the replacement resumes are queued, and a tap is short — so it
+        // is worth asking whether this context is actually one of the broken
+        // ones. A clock that ran at wall rate through the whole absence is not.
+        if (this._clockKeptUp(returned) === true) {
+          diagnostics.record('audio', 'trusting the context the page came back to', {
+            currentTime: returned.currentTime,
+            advancedMs,
+            sinceLastSeenMs,
+            loaded: this.loaded,
+            ...describeAudioSession(),
+          });
+          this.state = this.loaded ? 'ready' : 'loading';
+          this._observeClock();
+          return;
+        }
         diagnostics.record('audio', 'replacing the context the page came back to', {
           currentTime: returned.currentTime,
+          advancedMs,
+          sinceLastSeenMs,
           loaded: this.loaded,
           ...describeAudioSession(),
         });
@@ -693,6 +928,10 @@ class PianoAudioEngine {
     // listening yet, and the next tap reclaims again rather than trusting it.
     this._sessionStale = true;
     configurePlaybackAudioSession('foreground', true);
+    // Not a gesture, so iOS may refuse the element here; it is asked anyway
+    // because a page that has played it once before is often allowed, and the
+    // gesture that follows asks again if this one is turned down.
+    this._activateSessionWithMedia('foreground');
     const ctx = this.ctx;
     if (!ctx || ctx.state !== 'running' || typeof ctx.currentTime !== 'number') {
       diagnostics.record('audio', 'skipped the stall probe', {
@@ -901,6 +1140,7 @@ class PianoAudioEngine {
     const note = { keyId, midiNote, velocity };
     this.heldNotes.set(keyId, note);
     this.queuedNotes.set(keyId, note);
+    this._releasedWhileQueued.delete(keyId);
     if (!this.ctx || !this.sampleBuffer || this.ctx.state !== 'running') {
       // The one symptom a player reports as "no sound": keys arriving at an
       // engine that cannot play them. Which of the three is missing says why.
@@ -978,7 +1218,25 @@ class PianoAudioEngine {
     if (this.queuedNotes.size > 0) {
       diagnostics.record('audio', 'flushing queued notes', { queued: this.queuedNotes.size });
     }
-    for (const note of this.queuedNotes.values()) this._startNote(note);
+    const now = nowMs();
+    // oxlint-disable-next-line no-useless-spread -- _startNote deletes from this.queuedNotes while iterating.
+    for (const note of [...this.queuedNotes.values()]) {
+      const releasedAt = this._releasedWhileQueued.get(note.keyId);
+      if (releasedAt !== undefined) {
+        this._releasedWhileQueued.delete(note.keyId);
+        // The engine took too long. A note arriving now is not the one the
+        // player asked for, so it is dropped rather than played late.
+        if (now - releasedAt > QUEUED_RELEASE_GRACE_MS) {
+          this.queuedNotes.delete(note.keyId);
+          continue;
+        }
+      }
+      this._startNote(note);
+      // The finger is already gone: strike it, then let the damper fall on it.
+      // Short and quiet is still the press being answered; nothing at all is
+      // the app losing it.
+      if (releasedAt !== undefined) this.noteOff(note.keyId);
+    }
   }
 
   /**
@@ -1042,10 +1300,21 @@ class PianoAudioEngine {
 
   noteOff(keyId: string): void {
     this.heldNotes.delete(keyId);
-    this.queuedNotes.delete(keyId);
     const note = this.activeNotes.get(keyId);
     this.activeNotes.delete(keyId);
-    if (!note || !this.ctx) return;
+    if (!note) {
+      // No voice to release: either the press never became one because the
+      // engine could not play it, or its voice has already ended. A queued
+      // note is kept, and the moment the finger left with it — the strike is
+      // still owed, and dropping it here is how a tap on a waking engine ends
+      // up as silence.
+      if (this.queuedNotes.has(keyId)) this._releasedWhileQueued.set(keyId, nowMs());
+      else this.queuedNotes.delete(keyId);
+      return;
+    }
+    this.queuedNotes.delete(keyId);
+    this._releasedWhileQueued.delete(keyId);
+    if (!this.ctx) return;
     if (this.sustainEnabled) {
       // The damper stays off the string: keep it sounding until the pedal
       // lifts. A key struck twice under the pedal retires its earlier voice
@@ -1103,6 +1372,7 @@ class PianoAudioEngine {
   allNotesOff(): void {
     this.heldNotes.clear();
     this.queuedNotes.clear();
+    this._releasedWhileQueued.clear();
     this.sustainedNotes.clear();
     // oxlint-disable-next-line no-useless-spread -- _stopVoice deletes from this.voices while iterating.
     for (const note of [...this.voices]) this._stopVoice(note);
