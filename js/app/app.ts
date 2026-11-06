@@ -39,6 +39,7 @@ import { audioSpriteUrl, commit, version } from 'virtual:goodiano-assets';
 import { registerServiceWorker, RELOAD_MARKER } from './service-worker';
 import { InstallPromotionController } from './install-promotion';
 import { ComputerKeyboardController } from './computer-keyboard';
+import { ScreenWakeLock } from './wake-lock';
 import {
   getLocale,
   initializeLocalization,
@@ -77,6 +78,8 @@ class GoodianoApp {
   private _resizeObserver: ResizeObserver | null = null;
   private readonly _pressSources = new Map<string, Set<PressSource>>();
   private readonly installPromotion: InstallPromotionController;
+  /** Keeps the screen awake while the keyboard is in front of the player. */
+  private readonly screenWakeLock = new ScreenWakeLock();
   computerKeyboard: ComputerKeyboardController | null = null;
   private _sustainLatched = false;
   private _keyLabelsVisible = true;
@@ -219,12 +222,21 @@ class GoodianoApp {
       });
       if (document.hidden) {
         this._releaseAllNotes();
+        // Dropped rather than left to the platform: a lock held across a
+        // background trip would keep the screen lit for a page nobody is
+        // looking at, and iOS releases it anyway.
+        this.screenWakeLock.release('hidden');
         // The events that explain a silent return are recorded before the app
         // is backgrounded, and a backgrounded page may never get another turn
         // to write them out, so persist them at the last moment we control.
         diagnostics.flush();
         return;
       }
+      // The screen stays on while the keyboard is being played. A dimmed screen
+      // ends the session, and going away is what lets iOS take the audio unit
+      // with it — so this prevents the failure the audio engine can only try to
+      // repair afterwards.
+      void this.screenWakeLock.hold('visible');
       // On show: do not call resume() here — visibilitychange is not a user
       // gesture on iOS, so it would be ignored. The gesture listener above
       // resumes on the next tap. What does need doing here is checking that
@@ -240,10 +252,14 @@ class GoodianoApp {
       const persisted = (event as PageTransitionEvent).persisted;
       diagnostics.record('page', 'pageshow', { persisted, contextState: this.audio.ctx?.state ?? 'none' });
       if (persisted) this.audio.verifyRunning().catch(() => {});
+      // bfcache restores the page without a visibilitychange in some Safari
+      // versions, and a restored page holds no wake lock either.
+      void this.screenWakeLock.hold('pageshow');
     });
     window.addEventListener('pagehide', event => {
       diagnostics.record('page', 'pagehide', { persisted: (event as PageTransitionEvent).persisted });
       this._releaseAllNotes();
+      this.screenWakeLock.release('pagehide');
       diagnostics.flush();
     });
     // Losing the network while backgrounded is the other way a wake-up ends in
@@ -258,6 +274,10 @@ class GoodianoApp {
       diagnostics.flush();
     });
     document.addEventListener('resume', () => diagnostics.record('page', 'page resumed'));
+    // The app opens in front of the player and the keyboard is about to be
+    // played, so the screen is asked to stay awake before the first note
+    // rather than after the first time it dims.
+    void this.screenWakeLock.hold('startup');
   }
 
   private _requiredElement(selector: string): HTMLElement {

@@ -16,6 +16,7 @@ Play Goodiano at [goodiano.myles.hk](https://goodiano.myles.hk).
 - **Computer keyboard** — `Z`–`M` and `Q`–`P` play two octaves with the black keys on the row above; `←`/`→` shift octave and scroll the view; `Shift` and `Alt` accent or soften. Mapped by physical key position, so non-QWERTY layouts work unchanged.
 - **Sustain pedal** — Hold `Space`, or latch the pedal from the settings panel. Released keys keep ringing until the pedal lifts.
 - **Output settings** — Master volume and a note-name toggle, both remembered between visits.
+- **Screen stays awake** — A screen wake lock is held while the app is in front, so the keyboard does not dim in the middle of a piece. Low Power Mode declines it, and the app carries on either way.
 - **Diagnostics log** — The app records what the page and the audio engine did, and the settings panel exports it as a text file to share or download.
 
 ## Tech Stack
@@ -41,6 +42,7 @@ web/
 │   ├── audio.ts            # Audio-sprite loader + Web Audio playback engine
 │   ├── sample-zones.ts     # Generated sample offsets and pitch mappings
 │   ├── diagnostics.ts      # Lifecycle event log + settings-panel export
+│   ├── wake-lock.ts        # Screen wake lock while the keyboard is in use
 │   ├── keyboard.ts         # Layout computation & hit-testing
 │   ├── input.ts            # Pointer / keyboard input controller
 │   └── render.ts           # Keyboard + mini-map rendering
