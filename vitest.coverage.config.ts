@@ -32,6 +32,10 @@ export default defineConfig({
             headless: true,
             provider: playwright(),
             instances: [{ browser: 'webkit' }],
+            // Instrumenting every module is what makes a cold runner slow to
+            // reach the browser, and the 30 s default closed the page mid-run
+            // on CI. See vitest.browser.config.ts for the longer version.
+            connectTimeout: 120_000,
           },
         },
       },
