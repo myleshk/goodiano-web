@@ -54,6 +54,15 @@ const STALL_GESTURE_MIN_ELAPSED_MS = 250;
 // iOS took the audio session away and never gave it back. Nothing in the Web
 // Audio API reports that, so the output is tapped and measured instead.
 const OUTPUT_TAP_FFT_SIZE = 2048;
+// iOS hands the session back to a page whose media element is asking for it on
+// the way in, and not reliably to one whose only claim is an AudioContext. The
+// element plays true silence in a loop, so it is held only long enough to cover
+// the resume, the new context, and the first notes, then stood down instead of
+// running for the life of the page.
+const SESSION_MEDIA_HOLD_MS = 2_000;
+// One reading of the element's own clock, taken well after play(): a media
+// clock that never moves either means the page has no audio at all.
+const SESSION_MEDIA_PROBE_MS = 300;
 // A note that is really sounding is orders of magnitude above this a moment
 // after it starts. Only true digital silence reads below it.
 const SILENT_OUTPUT_PEAK = 1e-4;
@@ -196,6 +205,53 @@ function describeRoute(ctx: AudioContext): DiagnosticData {
   };
 }
 
+/**
+ * A silent WAV, built rather than shipped. It exists to give the page a media
+ * element that can ask iOS for the audio session, and every frame stays at
+ * zero: the element is there to hold the session open, not to be heard. Built
+ * once and reused, because a new blob URL per return would leak one per
+ * background trip.
+ */
+let silentMediaUrl: string | null | undefined;
+
+function silentLoopUrl(): string | null {
+  if (silentMediaUrl !== undefined) return silentMediaUrl;
+  silentMediaUrl = null;
+  try {
+    if (typeof Blob === 'undefined' || typeof URL === 'undefined'
+      || typeof URL.createObjectURL !== 'function') return null;
+    const sampleRate = 8_000;
+    // A quarter second is long enough to loop without a seam and short enough
+    // to keep the blob inside one audio buffer on every device that plays it.
+    const frames = sampleRate / 4;
+    const bytes = new Uint8Array(44 + frames * 2);
+    const view = new DataView(bytes.buffer);
+    const ascii = (offset: number, text: string) => {
+      for (let index = 0; index < text.length; index += 1) {
+        bytes[offset + index] = text.charCodeAt(index);
+      }
+    };
+    ascii(0, 'RIFF');
+    view.setUint32(4, 36 + frames * 2, true);
+    ascii(8, 'WAVE');
+    ascii(12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true); // PCM
+    view.setUint16(22, 1, true); // mono
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * 2, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true);
+    ascii(36, 'data');
+    view.setUint32(40, frames * 2, true);
+    silentMediaUrl = URL.createObjectURL(new Blob([bytes], { type: 'audio/wav' }));
+  } catch (_) {
+    // No blobs, no URL factory: the context paths still work on their own.
+    silentMediaUrl = null;
+  }
+  return silentMediaUrl;
+}
+
 class PianoAudioEngine {
   ctx: AudioContext | null = null;
   masterGain: GainNode | null = null;
@@ -250,6 +306,16 @@ class PianoAudioEngine {
   /** Peak of the last reading, for the export snapshot. Null once nothing has been measured. */
   private _lastOutputPeak: number | null = null;
   private _lastOutputLevelLog = 0;
+  /**
+   * The silent element that asks iOS for the audio session. Kept for the life
+   * of the page: rebuilding it on every return would cost a decode each time,
+   * and a media element that has already been played once is the one iOS is
+   * most willing to play again.
+   */
+  private _sessionMedia: HTMLAudioElement | null = null;
+  private _sessionMediaTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Last thing the element did, for the export snapshot. */
+  private _sessionMediaState = 'idle';
 
   /** Initialize AudioContext (must be resumed from a user gesture on iOS). */
   async init(): Promise<AudioContext> {
@@ -393,18 +459,125 @@ class PianoAudioEngine {
   }
 
   /**
-   * What the output tap has seen, for the exported report. `outputPeak` is the
-   * last reading rather than a fresh one: a reading taken with nothing sounding
-   * is legitimately zero and would only mislead whoever reads the log.
+   * What the output tap has seen, for the exported report. `lastOutputPeak` is
+   * the last reading rather than a fresh one: a reading taken with nothing
+   * sounding is legitimately zero and would only mislead whoever reads the log.
+   * Naming it for what it is matters more than it looks — the log behind this
+   * field was read as "the output is fine" while the app was silent, because a
+   * peak with no timestamp on it reads as a measurement of now.
    */
   describeOutput(): DiagnosticData {
     const ctx = this.ctx;
     return {
       outputTap: this.outputTap ? (this._outputTapProven ? 'proven' : 'unproven') : 'unavailable',
-      outputPeak: this._lastOutputPeak ?? undefined,
+      lastOutputPeak: this._lastOutputPeak ?? undefined,
       silentReadings: this._silentReadings,
+      sessionMedia: this._sessionMediaState,
       ...(ctx ? describeRoute(ctx) : describeAudioSession()),
     };
+  }
+
+  /**
+   * Ask for the audio session with a media element.
+   *
+   * Everything else on this page asks with an AudioContext, and a context that
+   * iOS has already taken the session from cannot ask again: it reports
+   * 'running', keeps rendering, reads full scale at the output tap, and sends
+   * that mix to a destination nobody is listening to. Nothing above the audio
+   * unit can see the difference — which is why the silent-return log reads like
+   * a healthy app. A media element is the one path WebKit activates the session
+   * for on its own, so it is the only handle this page has left on the audio
+   * unit after a return.
+   *
+   * Call it synchronously from the gesture or page event that is asking. iOS
+   * grants activation to play() calls made there and rejects the ones that
+   * arrive after a task boundary.
+   */
+  private _activateSessionWithMedia(reason: string): void {
+    try {
+      if (typeof Audio === 'undefined') return;
+      let element = this._sessionMedia;
+      if (!element) {
+        const url = silentLoopUrl();
+        if (!url) return;
+        element = new Audio(url);
+        element.loop = true;
+        element.preload = 'auto';
+        element.volume = 1;
+        element.setAttribute('playsinline', '');
+        element.setAttribute('aria-hidden', 'true');
+        // A detached element is allowed to play, but iOS is more willing to
+        // give an attached one the session, and an audio element with no
+        // controls draws nothing either way.
+        if (typeof document !== 'undefined' && document.body) {
+          try {
+            document.body.append(element);
+          } catch (_) {
+            // Not attached; still worth asking.
+          }
+        }
+        this._sessionMedia = element;
+      }
+      // Rewind rather than replay: an element iOS silently paused would
+      // otherwise stay paused, and a paused element proves nothing.
+      element.currentTime = 0;
+      this._sessionMediaState = 'asked';
+      diagnostics.record('audio', 'media element asked for the audio session', {
+        reason,
+        paused: element.paused,
+        readyState: element.readyState,
+        ...describeAudioSession(),
+      });
+      void Promise.resolve(element.play()).then(() => {
+        this._sessionMediaState = 'playing';
+        diagnostics.record('audio', 'media element playing', {
+          reason,
+          paused: element.paused,
+          volume: element.volume,
+        });
+        // A second clock, outside Web Audio. If this one does not move either,
+        // the page has no audio at all — no context, no element, no route —
+        // and a reload is the only cure left, which is worth knowing.
+        setTimeout(() => {
+          if (this._sessionMedia !== element) return;
+          diagnostics.record('audio', 'media element clock', {
+            reason,
+            currentTime: element.currentTime,
+            paused: element.paused,
+            ...describeAudioSession(),
+          });
+        }, SESSION_MEDIA_PROBE_MS);
+        this._standDownSessionMedia();
+      }).catch(error => {
+        this._sessionMediaState = 'refused';
+        diagnostics.record('audio', 'media element refused', { reason, ...describeError(error) });
+      });
+    } catch (error) {
+      this._sessionMediaState = 'unavailable';
+      diagnostics.record('audio', 'media element unavailable', { reason, ...describeError(error) });
+    }
+  }
+
+  /** Stop the silent element once the graph it was holding the session for is live. */
+  private _standDownSessionMedia(): void {
+    if (typeof setTimeout !== 'function') return;
+    if (this._sessionMediaTimer !== null) clearTimeout(this._sessionMediaTimer);
+    this._sessionMediaTimer = setTimeout(() => {
+      this._sessionMediaTimer = null;
+      const element = this._sessionMedia;
+      if (!element) return;
+      this._sessionMediaState = 'stood down';
+      diagnostics.record('audio', 'media element standing down', {
+        currentTime: element.currentTime,
+        paused: element.paused,
+        contextState: this.ctx?.state ?? 'none',
+      });
+      try {
+        element.pause();
+      } catch (_) {
+        // Nothing to stand down.
+      }
+    }, SESSION_MEDIA_HOLD_MS);
   }
 
   /**
@@ -586,6 +759,11 @@ class PianoAudioEngine {
     if (this._sessionStale) {
       this._sessionStale = false;
       configurePlaybackAudioSession('gesture', true);
+      // Inside the gesture, which is the only place iOS honours this: the
+      // context below is built on top of a session that is active again, or on
+      // one that will not be activated at all, and the two are worth telling
+      // apart in the log on the next round trip through the app switcher.
+      this._activateSessionWithMedia('gesture');
       const returned = this.ctx;
       // A return is the one silence nothing else here can see: the context
       // comes back 'running', with its clock advancing and its output tap
@@ -693,6 +871,10 @@ class PianoAudioEngine {
     // listening yet, and the next tap reclaims again rather than trusting it.
     this._sessionStale = true;
     configurePlaybackAudioSession('foreground', true);
+    // Not a gesture, so iOS may refuse the element here; it is asked anyway
+    // because a page that has played it once before is often allowed, and the
+    // gesture that follows asks again if this one is turned down.
+    this._activateSessionWithMedia('foreground');
     const ctx = this.ctx;
     if (!ctx || ctx.state !== 'running' || typeof ctx.currentTime !== 'number') {
       diagnostics.record('audio', 'skipped the stall probe', {

@@ -31,8 +31,37 @@ function fakeAudioSession(initialType = 'auto', events: string[] = []) {
   };
 }
 
-/** A context that also offers the limiter node, so routing can be asserted. */
-class LimiterAudioContext extends FakeAudioContext {
+/**
+ * Stands in for the silent media element the engine asks iOS for the session
+ * with. The list is exposed so a test can see how many elements were built and
+ * whether play() was called on them, and `refuse` covers iOS turning the
+ * request down the way it does outside a gesture.
+ */
+function stubSessionMedia({ refuse = false }: { refuse?: boolean } = {}) {
+  class SessionMedia {
+    static instances: SessionMedia[] = [];
+    paused = true;
+    currentTime = 0;
+    volume = 1;
+    loop = false;
+    readyState = 4;
+    setAttribute = vi.fn();
+    play = vi.fn(() => {
+      if (refuse) return Promise.reject(new DOMException('blocked', 'NotAllowedError'));
+      this.paused = false;
+      return Promise.resolve();
+    });
+    pause = vi.fn(() => { this.paused = true; });
+    constructor(public src: string) {
+      SessionMedia.instances.push(this);
+    }
+  }
+  vi.stubGlobal('Audio', SessionMedia as unknown as typeof Audio);
+  vi.stubGlobal('URL', { createObjectURL: vi.fn(() => 'blob:silent') });
+  return { instances: SessionMedia.instances };
+}
+
+/** A context that also offers the limiter node, so routing can be asserted. */class LimiterAudioContext extends FakeAudioContext {
   compressor = {
     threshold: { value: 0 },
     knee: { value: -1 },
@@ -694,6 +723,58 @@ describe('PianoAudioEngine playback', () => {
     expect(audioSession.events).toEqual(['session:playback']);
   });
 
+  it('asks for the audio session with a media element on a return', async () => {
+    vi.useFakeTimers();
+    const media = stubSessionMedia();
+    vi.stubGlobal('navigator', { audioSession: fakeAudioSession() });
+    vi.stubGlobal('window', { AudioContext: FakeAudioContext });
+    const engine = new PianoAudioEngine();
+    await engine.init();
+    const returned = engine.ctx as unknown as FakeAudioContext;
+    returned.state = 'running';
+
+    // The foreground asks, without waiting for a gesture: a page that has
+    // played the element before is often allowed to play it again.
+    const verified = engine.verifyRunning();
+    await vi.advanceTimersByTimeAsync(300);
+    await verified;
+
+    expect(media.instances).toHaveLength(1);
+    expect(media.instances[0].play).toHaveBeenCalledOnce();
+    expect(media.instances[0].volume).toBe(1);
+    expect(media.instances[0].loop).toBe(true);
+
+    // The gesture asks again, on the one element, rather than making another.
+    engine.ensureRunning();
+    expect(media.instances).toHaveLength(1);
+    expect(media.instances[0].play).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(engine.describeOutput().sessionMedia).toBe('playing');
+
+    // And stands it down once the graph it was holding the session for is up.
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(media.instances[0].paused).toBe(true);
+    expect(engine.describeOutput().sessionMedia).toBe('stood down');
+  });
+
+  it('resumes even when the media element is refused', async () => {
+    const media = stubSessionMedia({ refuse: true });
+    vi.stubGlobal('navigator', { audioSession: fakeAudioSession() });
+    vi.stubGlobal('window', { AudioContext: FakeAudioContext });
+    const engine = new PianoAudioEngine();
+    await engine.init();
+
+    // The foreground asks and is turned down, which must not stop anything:
+    // the context paths still run, and the log says which lever iOS accepted.
+    await expect(engine.verifyRunning()).resolves.toBe(false);
+
+    engine.ensureRunning();
+    await vi.waitFor(() => expect(engine.ctx?.state).toBe('running'));
+    expect(media.instances).toHaveLength(1);
+    expect(media.instances[0].play).toHaveBeenCalledTimes(2);
+    await vi.waitFor(() => expect(engine.describeOutput().sessionMedia).toBe('refused'));
+  });
+
   it('fades and stops a released voice before cleaning up on ended', () => {
     const { engine } = readyEngine();
     engine.noteOn('C4', 60);
@@ -966,7 +1047,7 @@ describe('PianoAudioEngine output tap', () => {
     const measured = engine.describeOutput();
     expect(measured.outputTap).toBe('proven');
     // Read back through a Float32 buffer, so exact equality is not on offer.
-    expect(measured.outputPeak).toBeCloseTo(0.42);
+    expect(measured.lastOutputPeak).toBeCloseTo(0.42);
   });
 
   it('replaces a context that keeps rendering silence once the tap has proved itself', async () => {
