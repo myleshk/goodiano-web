@@ -55,6 +55,11 @@ jobs:
       # below the recorded floor.
       - name: Tests and coverage
         run: npm run test:coverage
+        # A browser that dies mid-run leaves vitest waiting on it, and the job
+        # then sits there until somebody cancels it — which reports as
+        # "cancelled" and hides the error. Failing at ten minutes says what
+        # happened. A clean run is under two.
+        timeout-minutes: 10
 
       - name: Upload coverage report
         if: always()
